@@ -61,23 +61,25 @@ def scan_market(roll_win=35):
             if curr >= ma60 and ma20 >= ma60:
                 anchor = max(f382, ma20)
                 b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), anchor - min(0.25 * atr, anchor * 0.015)
-                dist_pct = abs(curr - anchor) / anchor
-                if dist_pct <= 0.08:
+                # 嚴格確保現價未跌破支撐下緣，且距離買進區間在 8% 內
+                if curr >= b_lo * 0.995 and (curr - b_hi) / b_hi <= 0.08:
                     sl = min(f500, ma60) - 0.3 * atr
                     tp1, tp2 = hi, hi + diff * 0.272
                     avg_b = (b_hi + b_lo) / 2
                     rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
+                    dist_pct = abs(curr - anchor) / anchor
                     trends.append({"title": title, "price": curr, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": rr, "dist": dist_pct})
             else:
                 anchor = f618
                 b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), max(lo, anchor - min(0.25 * atr, anchor * 0.015))
-                dist_pct = abs(curr - anchor) / anchor
-                if dist_pct <= 0.10:
+                # 嚴格確保現價穩守支撐之上，且距離買進區間在 10% 內
+                if curr >= b_lo * 0.995 and (curr - b_hi) / b_hi <= 0.10:
                     sl = lo - 0.5 * atr
                     tp1, tp2 = min(ma20, f500), f382
                     if tp1 > tp2: tp1, tp2 = tp2, tp1
                     avg_b = (b_hi + b_lo) / 2
                     rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
+                    dist_pct = abs(curr - anchor) / anchor
                     dips.append({"title": title, "price": curr, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": rr, "dist": dist_pct})
         except Exception:
             continue
