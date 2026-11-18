@@ -6,10 +6,11 @@ import numpy as np
 from datetime import datetime
 
 # ==========================================
-# 1. LINE Messaging API 設定（從環境變數讀取，確保安全）
+# 1. LINE Messaging API 與專屬 APP 網址設定
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_TOKEN", "cZtRmdtBZWhb/e9TYjOi7EpviEid8MzxWkLgzBVe8xxdn5mR75wHMG9rEchG7X8ydWCMTHKiUtw8VU8//sBPZR6dWbADRK7eAtgDzeG93/Sd44xqdm21erBISKZMasyu8KxzmYnb0jxLB9yx8g3ddwdB04t89/1O/w1cDnyilFU=")
 LINE_USER_ID = os.getenv("LINE_USER_ID", "U81b3432bfd33263e5b273a8463e66393")
+MY_APP_URL = "https://streamlit.app"
 
 def send_line_push(message_text):
     """透過 LINE Messaging API 發送主動推播訊息"""
@@ -42,7 +43,6 @@ def get_active_stocks(min_volume_lots=1000, min_price=15.0):
         for item in twse_data:
             code = item.get("Code", "").strip()
             name = item.get("Name", "").strip()
-            # 僅保留 4 碼一般普通股（排除 ETF、權證）
             if len(code) == 4 and code.isdigit() and not code.startswith("00"):
                 try:
                     vol_lots = int(item.get("TradeVolume", "0")) // 1000
@@ -75,7 +75,7 @@ def get_active_stocks(min_volume_lots=1000, min_price=15.0):
     return active_list
 
 # ==========================================
-# 3. 第二階段：波浪黃金分割 + RSI + ATR 風控掃描
+# 3. 第二階段：波浪黃金分割 + 建議買賣價區間精算
 # ==========================================
 def scan_market(lookback_days=90, rr_min=2.0):
     candidates = get_active_stocks(min_volume_lots=1000, min_price=15.0)
@@ -87,9 +87,7 @@ def scan_market(lookback_days=90, rr_min=2.0):
     tickers = [c["ticker"] for c in candidates]
     name_map = {c["ticker"]: f"{c['code']} {c['name']}" for c in candidates}
     
-    # 批次下載近一年日 K 線（大幅提升掃描速度）
     data = yf.download(tickers, period="1y", group_by="ticker", progress=False, threads=True)
-    
     matched_stocks = []
     
     for ticker in tickers:
@@ -106,9 +104,10 @@ def scan_market(lookback_days=90, rr_min=2.0):
             if diff <= 0:
                 continue
                 
-            # 黃金分割點位
-            fib_382 = s_high - diff * 0.382
-            fib_618 = s_high - diff * 0.618
+            # 黃金分割關鍵點位（針對波段高低點計算）
+            fib_382 = s_high - diff * 0.382  # 弱勢反彈位（第一停利）
+            fib_500 = s_high - diff * 0.500  # 中軸平衡位
+            fib_618 = s_high - diff * 0.618  # 黃金買進支撐位
             
             # 條件 A：股價正處於 0.618 黃金買進支撐區附近（上下 3% 緩衝區）
             if not (fib_618 * 0.97 <= curr_p <= fib_618 * 1.03):
@@ -125,7 +124,7 @@ def scan_market(lookback_days=90, rr_min=2.0):
             if rsi >= 42:
                 continue
                 
-            # 計算 14 日 ATR 動態停損與賺賠比
+            # 計算 14 日 ATR（真實波動幅度）設定動態買賣區間與停損
             tr = pd.concat([
                 df["High"] - df["Low"],
                 np.abs(df["High"] - df["Close"].shift()),
@@ -133,10 +132,21 @@ def scan_market(lookback_days=90, rr_min=2.0):
             ], axis=1).max(axis=1)
             atr = float(tr.rolling(14).mean().iloc[-1])
             
+            # 建議分批買進區間：以 0.618 支撐位為上緣，向下延伸 0.5 倍 ATR（但不低於波段低點）
+            buy_high = max(fib_618, curr_p)
+            buy_low = max(s_low, fib_618 - 0.5 * atr)
+            
+            # 防洗盤嚴格停損價：波段低點下方 0.5 倍 ATR
             stop_loss = s_low - 0.5 * atr
-            take_profit = fib_382
-            risk = curr_p - stop_loss
-            reward = take_profit - curr_p
+            
+            # 雙重停利目標計算（針對從低點反彈至高點波段）
+            tp1 = fib_382  # 第一停利位（0.382）
+            tp2 = s_high - diff * 0.236 if fib_500 <= curr_p else fib_500  # 第二停利位（0.500 或 0.236）
+            
+            # 計算賺賠比（以建議買進區間中值進場、第一停利位出場計算）
+            avg_buy = (buy_high + buy_low) / 2
+            risk = avg_buy - stop_loss
+            reward = tp1 - avg_buy
             rr_ratio = reward / risk if risk > 0 else 0
             
             # 條件 C：風險報酬比必須大於設定門檻（預設 2.0 倍）
@@ -144,38 +154,49 @@ def scan_market(lookback_days=90, rr_min=2.0):
                 matched_stocks.append({
                     "title": name_map[ticker],
                     "price": curr_p,
-                    "fib_618": fib_618,
+                    "buy_low": buy_low,
+                    "buy_high": buy_high,
                     "stop_loss": stop_loss,
-                    "take_profit": take_profit,
+                    "tp1": tp1,
+                    "tp2": tp2,
                     "rsi": rsi,
                     "rr": rr_ratio
                 })
         except Exception:
             continue
             
-    # 依照風險報酬比由高到低排序，取前 8 檔最佳標的
     matched_stocks.sort(key=lambda x: x["rr"], reverse=True)
     return matched_stocks[:8]
 
 # ==========================================
-# 4. 主程式執行與報告組裝
+# 4. 主程式執行與買賣建議報告組裝
 # ==========================================
 if __name__ == "__main__":
     today_str = datetime.now().strftime("%Y-%m-%d")
     results = scan_market(lookback_days=90, rr_min=2.0)
     
     if not results:
-        report = f"📊 【AI 量化選股日報】{today_str}\n\n今日全市場掃描完畢，目前無同時符合「回測 0.618 支撐 + RSI低檔 + 賺賠比 > 2」之標的，建議保留現金觀望。"
+        report = (
+            f"📊 【AI 量化選股日報】{today_str}\n\n"
+            f"今日全市場掃描完畢，目前無同時符合「回測 0.618 支撐 + RSI低檔 + 賺賠比 ≥ 2」之標的，建議保留現金觀望。\n\n"
+            f"📱 手機看盤 APP：{MY_APP_URL}"
+        )
     else:
-        lines = [f"🚀 【AI 波浪黃金分割選股日報】\n日期：{today_str}\n篩選條件：0.618支撐區 | RSI<42 | 賺賠比≥2\n" + "="*22]
+        lines = [
+            f"🚀 【AI 波浪黃金分割買賣建議日報】\n"
+            f"日期：{today_str}\n"
+            f"策略：回測0.618支撐 | RSI<42 | 賺賠比≥2\n" + "=" * 22
+        ]
         for idx, s in enumerate(results, 1):
             lines.append(
-                f"{idx}. {s['title']}（現價 {s['price']:.1f}）\n"
-                f"   • 0.618支撐：{s['fib_618']:.1f} 元\n"
-                f"   • ATR停損價：{s['stop_loss']:.1f} 元\n"
-                f"   • 0.382停利：{s['take_profit']:.1f} 元\n"
-                f"   • 賺賠比：{s['rr']:.1f} 倍 ｜ RSI：{s['rsi']:.1f}"
+                f"{idx}. {s['title']}（現價 {s['price']:.1f} 元）\n"
+                f"   🟢 建議買進區間：{s['buy_low']:.1f} ～ {s['buy_high']:.1f} 元\n"
+                f"   🔴 防洗盤停損價：{s['stop_loss']:.1f} 元\n"
+                f"   🎯 第一停利 (0.382)：{s['tp1']:.1f} 元\n"
+                f"   🏆 第二停利 (0.500)：{s['tp2']:.1f} 元\n"
+                f"   📊 賺賠比：{s['rr']:.1f} 倍 ｜ RSI：{s['rsi']:.1f}"
             )
+        lines.append(f"📱 點擊開啟互動圖表 APP：\n{MY_APP_URL}")
         report = "\n\n".join(lines)
         
     print(report)
