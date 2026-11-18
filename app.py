@@ -27,18 +27,16 @@ def get_maps():
                 n = info.get("name", "").strip() if isinstance(info, dict) else str(info).strip()
                 m = info.get("type", "") if isinstance(info, dict) else ""
                 if len(c) == 4 and c.isdigit() and n:
-                    sfx = ".TWO" if "上櫃" in m or "otc" in m.lower() else ".TW"
-                    c_map[c] = n_map[n] = (f"{c}{sfx}", f"{c} {n}")
+                    c_map[c] = n_map[n] = (f"{c}{'.TWO' if '上櫃' in m or 'otc' in m.lower() else '.TW'}", f"{c} {n}")
     except Exception:
         pass
     try:
         res = requests.get("https://finmindtrade.com", params={"dataset": "TaiwanStockInfo"}, timeout=8).json()
         if res.get("status") == 200:
-            for item in res.get("data", []):
-                c, n, m = str(item.get("stock_id", "")).strip(), str(item.get("stock_name", "")).strip(), str(item.get("type", "")).strip()
+            for it in res.get("data", []):
+                c, n, m = str(it.get("stock_id", "")).strip(), str(it.get("stock_name", "")).strip(), str(it.get("type", "")).strip()
                 if len(c) == 4 and c.isdigit() and n:
-                    sfx = ".TWO" if m == "tpex" else ".TW"
-                    c_map[c] = n_map[n] = (f"{c}{sfx}", f"{c} {n}")
+                    c_map[c] = n_map[n] = (f"{c}{'.TWO' if m == 'tpex' else '.TW'}", f"{c} {n}")
     except Exception:
         pass
     return c_map, n_map
@@ -82,10 +80,10 @@ def fetch_inst(code):
     return pd.DataFrame()
 
 c_map, n_map = get_maps()
-st.caption(f"📚 已載入全市場台股對照庫：共 **{len(c_map)}** 檔上市櫃股票")
 q = st.text_input("輸入台股代號或股名（例：亞光、大立光、元太、雙鴻、聯亞）", value="亞光")
-roll_win = st.slider("動態滾動波浪週期", 20, 90, 35)
-rr_min = st.number_input("最低要求賺賠比", 1.0, 5.0, 2.0, 0.5)
+col_in1, col_in2 = st.columns(2)
+roll_win = col_in1.slider("動態滾動波浪週期", 20, 90, 35)
+custom_buy = col_in2.number_input("自訂試算買進價（0 = 用系統低接價）", min_value=0.0, value=0.0, step=0.5)
 
 if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
     ticker, title = find_stock(q, c_map, n_map)
@@ -125,8 +123,10 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
             b_hi, b_lo, sl = lo + min(0.2 * atr, lo * 0.01), lo, lo - 0.5 * atr
             tp1, tp2, tp1_l, tp2_l = f618, f500, "0.618逃命點", "0.500壓力點"
 
-        avg_b = (b_hi + b_lo) / 2
-        rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
+        # 依據自訂買進價或系統建議中值計算專屬賺賠比
+        calc_entry = custom_buy if custom_buy > 0 else (b_hi + b_lo) / 2
+        risk_amt, reward_amt = calc_entry - sl, tp1 - calc_entry
+        rr = reward_amt / risk_amt if risk_amt > 0 else 0
         code = f_ticker.split(".")[0]
 
         st.subheader(f"📊 {title} 動態交易計畫")
@@ -134,7 +134,7 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
         c1, c2, c3 = st.columns(3)
         c1.metric("最新收盤價", f"{curr:.1f} 元", f"月線 {ma20:.1f}")
         c2.metric("14日 RSI", f"{rsi:.1f}")
-        c3.metric("動態賺賠比", f"{rr:.2f} 倍")
+        c3.metric(f"動態賺賠比（基準 {calc_entry:.1f}）", f"{rr:.2f} 倍", f"獲利 {reward_amt/calc_entry*100:+.1f}% / 風險 {-risk_amt/calc_entry*100:.1f}%")
 
         b1, b2 = st.columns(2)
         b1.success(f"🟢 **低接買進帶**：{b_lo:.1f} ～ {b_hi:.1f} 元\n\n（第一批：{b_hi:.1f} ｜ 第二批：{b_lo:.1f}）")
