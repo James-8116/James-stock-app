@@ -7,7 +7,7 @@ from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_TOKEN", "").strip()
 LINE_USER_ID = os.getenv("LINE_USER_ID", "").strip()
-APP_URL = "https://streamlit.app"
+APP_URL = "https://james-stockapp.streamlit.app/"
 
 def send_line(msg):
     if not LINE_TOKEN or not LINE_USER_ID:
