@@ -18,8 +18,11 @@ BUILTIN = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_maps():
-    c_map = dict(BUILTIN)
-    n_map = {v[1].split(" ")[1]: v for v in BUILTIN.values()}
+    c_map, n_map = dict(BUILTIN), {}
+    for v in BUILTIN.values():
+        _, title = v
+        _, name = title.split(" ")
+        n_map[name] = v
     apis = [
         ("https://twse.com.tw", "Code", "Name", ".TW"),
         ("https://tpex.org.tw", "SecuritiesCompanyCode", "CompanyName", ".TWO")
@@ -73,7 +76,7 @@ def fetch_inst(code):
     return pd.DataFrame()
 
 c_map, n_map = get_maps()
-q = st.text_input("輸入台股代號或股名（例：台積電、2340、台亞、4908）", value="台積電")
+q = st.text_input("輸入台股代號或股名（例：台積電、2340、台亞、4908）", value="4908")
 days = st.slider("波段觀察天數", 30, 240, 90)
 rr_min = st.number_input("最低要求賺賠比", 1.0, 5.0, 2.0, 0.5)
 
@@ -84,21 +87,27 @@ if st.button("🚀 啟動 AI 診斷", use_container_width=True):
         st.error(f"找不到「{q}」的資料，請確認輸入是否正確。")
     else:
         sub = df.tail(days)
-        curr, hi, lo = float(sub['Close'].iloc[-1]), float(sub['High'].max()), float(sub['Low'].min())
+        curr, hi, lo = float(sub['Close'].iat[-1]), float(sub['High'].max()), float(sub['Low'].min())
         diff = hi - lo
         f382, f500, f618 = hi - diff * 0.382, hi - diff * 0.5, hi - diff * 0.618
         
         delta = df['Close'].diff()
-        rsi = float((100 - 100 / (1 + delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0)).rolling(14).mean())).iloc[-1])
+        rsi = float((100 - 100 / (1 + delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0)).rolling(14).mean())).iat[-1])
         tr = np.max(pd.concat([df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift()), np.abs(df['Low'] - df['Close'].shift())], axis=1), axis=1)
-        atr = float(tr.rolling(14).mean().iloc[-1])
+        atr = float(tr.rolling(14).mean().iat[-1])
         
-        b_hi = max(f618, curr) if curr <= f618 * 1.03 else f618
-        b_lo, sl = max(lo, f618 - 0.5 * atr), lo - 0.5 * atr
-        tp1, tp2 = f382, (hi - diff * 0.236 if f500 <= curr else f500)
+        # 優化後：緊貼 0.618 黃金支撐的窄幅買進區間（總寬度嚴格限制在 2% 內）
+        up_buf = min(0.15 * atr, f618 * 0.005)
+        dn_buf = min(0.25 * atr, f618 * 0.015)
+        b_hi = f618 + up_buf
+        b_lo = max(lo, f618 - dn_buf)
+        
+        sl = lo - 0.5 * atr
+        tp1 = f382
+        tp2 = hi - diff * 0.236 if f500 <= curr else f500
         avg_b = (b_hi + b_lo) / 2
         rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
-        code = f_ticker.split(".")[0]
+        code, _ = f_ticker.split(".")
 
         st.subheader(f"📊 {title} 交易計畫")
         c1, c2, c3 = st.columns(3)
@@ -107,16 +116,16 @@ if st.button("🚀 啟動 AI 診斷", use_container_width=True):
         c3.metric("預估賺賠比", f"{rr:.2f} 倍")
 
         b1, b2 = st.columns(2)
-        b1.success(f"🟢 **建議買進區間**：{b_lo:.1f} ～ {b_hi:.1f} 元")
+        b1.success(f"🟢 **精準買進區間**：{b_lo:.1f} ～ {b_hi:.1f} 元\n\n（第一批：{b_hi:.1f} ｜ 第二批：{b_lo:.1f}）")
         b2.error(f"🔴 **嚴格停損價**：{sl:.1f} 元")
         t1, t2 = st.columns(2)
         t1.info(f"🎯 **第一停利 (0.382)**：{tp1:.1f} 元")
         t2.info(f"🏆 **第二停利 (0.500)**：{tp2:.1f} 元")
 
-        if rr >= rr_min and rsi < 42 and curr <= f618 * 1.03:
-            st.success("✅ **【強烈關注買進】** 回測 0.618 支撐且賺賠比達標！")
+        if rr >= rr_min and rsi < 42 and curr <= b_hi * 1.015:
+            st.success("✅ **【強烈關注買進】** 股價已進入 0.618 精準買進區且賺賠比達標！")
         else:
-            st.info("ℹ️ **【建議觀望/等待回測】** 尚未同時滿足低檔支撐與賺賠比標準。")
+            st.info("ℹ️ **【建議觀望/等待回測】** 尚未落入精準買進區間或賺賠比不足，建議掛單等待。")
 
         st.markdown("### 🏦 三大法人近 5 日買賣超（張）")
         df_i = fetch_inst(code)
