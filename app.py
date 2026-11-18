@@ -18,7 +18,8 @@ BUILTIN = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_maps():
-    c_map, n_map = dict(BUILTIN), {v.split(" ")[1]: v for v in BUILTIN.values()}
+    c_map = dict(BUILTIN)
+    n_map = {v[1].split(" ")[1]: v for v in BUILTIN.values()}
     apis = [
         ("https://twse.com.tw", "Code", "Name", ".TW"),
         ("https://tpex.org.tw", "SecuritiesCompanyCode", "CompanyName", ".TWO")
