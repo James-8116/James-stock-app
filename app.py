@@ -4,9 +4,11 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
+import altair as alt
 
-st.set_page_config(page_title="AI 波浪黃金分割決策 APP", layout="centered")
-st.title("📈 AI 波浪與黃金分割決策 APP")
+st.set_page_config(page_title="AI 動態波浪黃金分割決策 APP", layout="centered")
+st.title("📈 AI 動態波浪與黃金分割決策 APP")
+st.caption("升級版：逐日滾動重算高低點 + 移動停利防線 + 轉折修正賣點")
 
 BUILTIN = {
     "2330": ("2330.TW", "2330 台積電"), "2340": ("2340.TW", "2340 台亞"),
@@ -39,25 +41,20 @@ def get_maps():
 
 def find_stock(q, c_map, n_map):
     q = q.strip().upper()
-    if q in c_map:
-        return c_map[q]
-    if q in n_map:
-        return n_map[q]
+    if q in c_map: return c_map[q]
+    if q in n_map: return n_map[q]
     for name, info in n_map.items():
-        if q in name:
-            return info
+        if q in name: return info
     return (f"{q}.TW", q) if q.isdigit() else (None, q)
 
 @st.cache_data(ttl=1800)
 def fetch_data(ticker, raw_q):
     candidates = [ticker] if ticker else []
-    if raw_q.isdigit():
-        candidates += [f"{raw_q}.TW", f"{raw_q}.TWO"]
+    if raw_q.isdigit(): candidates += [f"{raw_q}.TW", f"{raw_q}.TWO"]
     for t in dict.fromkeys(candidates):
         df = yf.download(t, period="1y", progress=False)
         if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             return df, t
     return pd.DataFrame(), None
 
@@ -82,75 +79,88 @@ def fetch_inst(code):
 
 c_map, n_map = get_maps()
 q = st.text_input("輸入台股代號或股名（例：台積電、2340、台亞、4908）", value="台積電")
-days = st.slider("波段觀察天數", 30, 240, 90)
+roll_win = st.slider("動態滾動波浪週期（天數越短越貼近近期轉折）", 20, 90, 35)
 rr_min = st.number_input("最低要求賺賠比", 1.0, 5.0, 2.0, 0.5)
 
-if st.button("🚀 啟動 AI 診斷", use_container_width=True):
+if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
     ticker, title = find_stock(q, c_map, n_map)
     df, f_ticker = fetch_data(ticker, q.strip())
     if df.empty:
         st.error(f"找不到「{q}」的資料，請確認輸入是否正確。")
     else:
-        sub = df.tail(days)
-        curr = float(sub['Close'].iat[-1])
-        hi, lo = float(sub['High'].max()), float(sub['Low'].min())
-        diff = hi - lo
-        f382, f500, f618 = hi - diff * 0.382, hi - diff * 0.500, hi - diff * 0.618
-        ext1272 = hi + diff * 0.272
+        # 逐日滾動計算每天的動態高低點與移動防線（不再是死板的直線）
+        df = df.copy()
+        df['roll_hi'] = df['High'].rolling(roll_win).max()
+        df['roll_lo'] = df['Low'].rolling(roll_win).min()
+        df['roll_diff'] = df['roll_hi'] - df['roll_lo']
+        df['dyn_382'] = df['roll_hi'] - df['roll_diff'] * 0.382
+        df['dyn_500'] = df['roll_hi'] - df['roll_diff'] * 0.500
+        df['dyn_618'] = df['roll_hi'] - df['roll_diff'] * 0.618
+        df['ma20'] = df['Close'].rolling(20).mean()
+        df['ma60'] = df['Close'].rolling(60).mean()
 
         delta = df['Close'].diff()
-        rsi = float((100 - 100 / (1 + delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0)).rolling(14).mean())).iat[-1])
+        df['rsi'] = 100 - 100 / (1 + delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0)).rolling(14).mean())
         tr = np.max(pd.concat([df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift()), np.abs(df['Low'] - df['Close'].shift())], axis=1), axis=1)
-        atr = float(tr.rolling(14).mean().iat[-1])
+        df['atr'] = tr.rolling(14).mean()
 
-        ma20 = float(df['Close'].rolling(20).mean().iat[-1])
-        ma60 = float(df['Close'].rolling(60).mean().iat[-1])
-        is_uptrend = (curr > ma60) and (ma20 >= ma60)
+        # 動態移動停利/支撐防線：多頭時跟著高點上移，跌破後轉為反彈減碼壓力線
+        df['動態停利壓力'] = np.where(df['Close'] >= df['ma20'], df['roll_hi'], df['dyn_382'])
+        df['動態買進支撐'] = np.where(df['Close'] >= df['ma20'], df['dyn_382'], df['dyn_618'])
+        df['動態移動停損'] = np.where(df['Close'] >= df['ma20'], df['dyn_500'] - 0.3 * df['atr'], df['roll_lo'] - 0.5 * df['atr'])
 
-        if is_uptrend:
-            mode_name = "🔥 順勢主升段模式（站穩季線，抓 0.382 / 月線淺回檔）"
+        latest = df.iloc[-1]
+        curr = float(latest['Close'])
+        hi, lo = float(latest['roll_hi']), float(latest['roll_lo'])
+        peak_date = df.tail(roll_win)['High'].idxmax().strftime("%Y-%m-%d")
+        f382, f500, f618 = float(latest['dyn_382']), float(latest['dyn_500']), float(latest['dyn_618'])
+        ma20, ma60 = float(latest['ma20']), float(latest['ma60'])
+        rsi, atr = float(latest['rsi']), float(latest['atr'])
+
+        # 根據最新一天的位階，動態修正買點與賣點
+        if curr >= ma20 and curr >= f382:
+            status = "🔥 【主升段移動停利模式】（沿月線與 0.382 強勢推進）"
             anchor = max(f382, ma20)
             b_hi = anchor + min(0.15 * atr, anchor * 0.005)
             b_lo = anchor - min(0.25 * atr, anchor * 0.015)
-            sl = min(f500, ma60) - 0.3 * atr
-            tp1, tp2 = hi, ext1272
-            tp1_label, tp2_label = "前波高點", "1.272 延伸目標"
-        else:
-            mode_name = "🛡️ 黃金回檔抄底模式（修正波段，嚴守 0.618 支撐低接）"
+            sl = float(latest['動態移動停損'])
+            tp1, tp2 = hi, hi + (hi - lo) * 0.272
+            tp1_lbl, tp2_lbl = "波段前高", "1.272 延伸目標"
+        elif curr < ma20 and curr >= f618:
+            status = f"⚠️ 【高點 ({peak_date}) 後轉折修正】（已跌破月線，下修賣點為反彈減碼位）"
             anchor = f618
             b_hi = anchor + min(0.15 * atr, anchor * 0.005)
             b_lo = max(lo, anchor - min(0.25 * atr, anchor * 0.015))
             sl = lo - 0.5 * atr
-            tp1, tp2 = f500, f382
-            tp1_label, tp2_label = "0.500 中軸", "0.382 反彈位"
+            tp1, tp2 = min(ma20, f500), f382
+            tp1_lbl, tp2_lbl = "月線/0.500反彈賣點", "0.382強勢減碼點"
+        else:
+            status = f"🚨 【高點 ({peak_date}) 後跌破 0.618 支撐】（空方修正波，反彈皆看賣點）"
+            anchor = lo
+            b_hi = lo + min(0.2 * atr, lo * 0.01)
+            b_lo = lo
+            sl = lo - 0.5 * atr
+            tp1, tp2 = f618, f500
+            tp1_lbl, tp2_lbl = "0.618反彈逃命點", "0.500減碼壓力點"
 
         avg_b = (b_hi + b_lo) / 2
         rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
         code, _ = f_ticker.split(".")
 
-        st.subheader(f"📊 {title} 交易計畫")
-        st.caption(f"目前自動啟動：**{mode_name}**")
+        st.subheader(f"📊 {title} 動態交易計畫")
+        st.info(f"**最新狀態判斷：** {status}\n\n（近 {roll_win} 日波段高點出現於 **`{peak_date}`** 的 **`{hi:.1f} 元`**，防線已隨最新行情自動修正）")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("收盤價", f"{curr:.1f} 元", f"季線 {ma60:.0f}")
+        c1.metric("最新收盤價", f"{curr:.1f} 元", f"月線 {ma20:.1f}")
         c2.metric("14日 RSI", f"{rsi:.1f}")
-        c3.metric("預估賺賠比", f"{rr:.2f} 倍")
+        c3.metric("動態賺賠比", f"{rr:.2f} 倍")
 
         b1, b2 = st.columns(2)
-        b1.success(f"🟢 **精準買進區間**：{b_lo:.1f} ～ {b_hi:.1f} 元\n\n（第一批：{b_hi:.1f} ｜ 第二批：{b_lo:.1f}）")
-        b2.error(f"🔴 **嚴格停損價**：{sl:.1f} 元")
+        b1.success(f"🟢 **動態低接買進帶**：{b_lo:.1f} ～ {b_hi:.1f} 元\n\n（第一批：{b_hi:.1f} ｜ 第二批：{b_lo:.1f}）")
+        b2.error(f"🔴 **動態移動停損價**：{sl:.1f} 元")
         t1, t2 = st.columns(2)
-        t1.info(f"🎯 **第一停利 ({tp1_label})**：{tp1:.1f} 元")
-        t2.info(f"🏆 **第二停利 ({tp2_label})**：{tp2:.1f} 元")
-
-        if curr < b_lo:
-            st.warning(f"⚠️ **【已跌破支撐下緣】** 目前收盤價（{curr:.1f}）低於買進區間，建議等重新站回 `{b_lo:.1f} 元` 之上再行介入。")
-        elif b_lo <= curr <= b_hi * 1.01 and rr >= rr_min:
-            st.success("✅ **【進入精準買進區】** 股價已落入目標買進帶且賺賠比達標，可依計畫分批佈局！")
-        elif rr < rr_min:
-            st.info(f"ℹ️ **【賺賠比偏低】** 預估賺賠比（{rr:.2f} 倍）未達設定門檻 {rr_min} 倍，建議等待更好價格。")
-        else:
-            st.info(f"ℹ️ **【等待拉回買點】** 目前股價高於買進區間，可先於 `{b_lo:.1f} ～ {b_hi:.1f} 元` 預掛限價單等待。")
+        t1.warning(f"🎯 **修正第一賣點 ({tp1_lbl})**：{tp1:.1f} 元")
+        t2.warning(f"🏆 **修正第二賣點 ({tp2_lbl})**：{tp2:.1f} 元")
 
         st.markdown("### 🏦 三大法人近 5 日買賣超（張）")
         df_i = fetch_inst(code)
@@ -160,11 +170,28 @@ if st.button("🚀 啟動 AI 診斷", use_container_width=True):
         else:
             st.caption("盤後籌碼更新中或暫無紀錄。")
 
-        st.markdown("### 📉 走勢與關鍵買賣防線圖")
-        chart = pd.DataFrame({
-            "收盤價": sub['Close'],
-            "第一停利線": tp1,
-            "買進支撐基準": anchor,
-            "嚴格停損線": sl
-        })
-        st.line_chart(chart, color=["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"])
+        st.markdown("### 📉 動態滾動買賣防線走勢圖（近 90 交易日）")
+        plot_df = df.tail(90).reset_index()
+        date_col = plot_df.columns
+        melt_df = plot_df.melt(
+            id_vars=[date_col],
+            value_vars=['Close', '動態停利壓力', '動態買進支撐', '動態移動停損'],
+            var_name='指標線',
+            value_name='價格'
+        )
+        melt_df['指標線'] = melt_df['指標線'].replace({'Close': '收盤價'})
+
+        y_min = melt_df['價格'].min() * 0.96
+        y_max = melt_df['價格'].max() * 1.04
+
+        chart = alt.Chart(melt_df).mark_line(strokeWidth=2).encode(
+            x=alt.X(f'{date_col}:T', title='日期'),
+            y=alt.Y('價格:Q', scale=alt.Scale(domain=[y_min, y_max]), title='價格 (元)'),
+            color=alt.Color('指標線:N', scale=alt.Scale(
+                domain=['收盤價', '動態停利壓力', '動態買進支撐', '動態移動停損'],
+                range=['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
+            )),
+            tooltip=[alt.Tooltip(f'{date_col}:T', title='日期'), '指標線:N', alt.Tooltip('價格:Q', format='.1f')]
+        ).interactive()
+
+        st.altair_chart(chart, use_container_width=True)
