@@ -19,7 +19,11 @@ BUILTIN = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_maps():
-    c_map, n_map = dict(BUILTIN), {v.split(" "): v for v in BUILTIN.values()}
+    c_map, n_map = dict(BUILTIN), {}
+    for code, pair in BUILTIN.items():
+        _, title = pair
+        _, name = title.split(" ")
+        n_map[name] = pair
     try:
         res = requests.get("https://githubusercontent.com", timeout=8)
         if res.status_code == 200:
@@ -82,7 +86,6 @@ def fetch_inst(code):
 c_map, n_map = get_maps()
 q = st.text_input("輸入台股代號或股名（例：亞光、大立光、元太、雙鴻、聯亞）", value="亞光")
 
-# 即時預覽：輸入完股名立刻秀出最新收盤價與漲跌
 ticker, title = find_stock(q, c_map, n_map)
 df, f_ticker = fetch_data(ticker, q.strip())
 if not df.empty and len(df) >= 2:
@@ -135,7 +138,7 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
         calc_entry = custom_buy if custom_buy > 0 else (b_hi + b_lo) / 2
         risk_amt, reward_amt = calc_entry - sl, tp1 - calc_entry
         rr = reward_amt / risk_amt if risk_amt > 0 else 0
-        code = f_ticker.split(".")
+        code, _ = f_ticker.split(".")
 
         st.subheader(f"📊 {title} 動態交易計畫")
         st.info(f"**{status}**（近 {roll_win} 日高點：`{peak_date}` 的 `{hi:.1f} 元`）")
