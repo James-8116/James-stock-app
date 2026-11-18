@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -97,7 +98,17 @@ elif q.strip():
 
 col_in1, col_in2 = st.columns(2)
 roll_win = col_in1.slider("動態滾動波浪週期", 20, 90, 35)
-custom_buy = col_in2.number_input("自訂試算買進價（輸入後自動重算）", min_value=0.0, value=0.0, step=0.5)
+buy_str = col_in2.text_input("自訂試算買進價（留空 = 用系統低接價）", value="", placeholder="點此輸入數字，例如 110.5")
+try:
+    custom_buy = float(buy_str.strip()) if buy_str.strip() else 0.0
+except ValueError:
+    custom_buy = 0.0
+
+# 注入手機專屬小數點數字鍵盤屬性 (inputmode="decimal")
+components.html("""<script>
+const inputs = window.parent.document.querySelectorAll('input[aria-label*="自訂試算買進價"]');
+inputs.forEach(el => { el.setAttribute('inputmode', 'decimal'); });
+</script>""", height=0)
 
 if not df.empty:
     df = df.copy()
