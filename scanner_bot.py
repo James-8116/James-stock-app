@@ -13,7 +13,8 @@ def send_line(msg):
     if not LINE_TOKEN or not LINE_USER_ID:
         print("⚠️ 未設定 LINE 金鑰，略過推播")
         return
-    api_endpoint = "https://line.me"
+    # 使用字串拼接防止網址被自動改寫
+    push_url = "https://" + "api.line.me" + "/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_TOKEN}"
@@ -22,45 +23,62 @@ def send_line(msg):
         "to": LINE_USER_ID,
         "messages": [{"type": "text", "text": msg}]
     }
-    res = requests.post(api_endpoint, headers=headers, json=payload, timeout=15)
+    res = requests.post(push_url, headers=headers, json=payload, timeout=15)
     if res.status_code == 200:
         print("✅ LINE 推播成功！")
     else:
-        print(f"❌ 推播失敗 ({res.status_code}) | URL: {res.url} | 回應: {res.text}")
+        print(f"❌ 推播失敗 ({res.status_code})：{res.text}")
 
-def get_active_stocks(min_lots=1500, min_price=15.0):
+def get_all_stocks():
     stocks = []
-    apis = [
-        ("https://twse.com.tw", "Code", "Name", "TradeVolume", "ClosingPrice", ".TW"),
-        ("https://tpex.org.tw", "SecuritiesCompanyCode", "CompanyName", "TradingShares", "Close", ".TWO")
-    ]
-    for url, k_c, k_n, k_v, k_p, sfx in apis:
+    # 來源 1：全球 CDN 台股總表（不受海外 IP 阻擋）
+    try:
+        cdn_url = "https://githubusercontent.com"
+        res = requests.get(cdn_url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, dict):
+                for c, info in data.items():
+                    n = info.get("name", "").strip() if isinstance(info, dict) else str(info).strip()
+                    m = info.get("type", "") if isinstance(info, dict) else ""
+                    if len(c) == 4 and c.isdigit() and not c.startswith("00") and n:
+                        sfx = ".TWO" if "上櫃" in m or "otc" in m.lower() else ".TW"
+                        stocks.append({"ticker": f"{c}{sfx}", "title": f"{c} {n}"})
+    except Exception:
+        pass
+
+    # 來源 2：FinMind 台股總表備援
+    if len(stocks) < 100:
         try:
-            for item in requests.get(url, timeout=15).json():
-                c, n = item.get(k_c, "").strip(), item.get(k_n, "").strip()
-                if len(c) == 4 and c.isdigit() and not c.startswith("00"):
-                    try:
-                        lots = int(str(item.get(k_v, "0")).replace(",", "")) // 1000
-                        price = float(str(item.get(k_p, "0")).replace(",", ""))
-                        if lots >= min_lots and price >= min_price:
-                            stocks.append({"ticker": f"{c}{sfx}", "title": f"{c} {n}"})
-                    except ValueError:
-                        continue
+            fm_url = "https://finmindtrade.com"
+            res = requests.get(fm_url, params={"dataset": "TaiwanStockInfo"}, timeout=10).json()
+            if res.get("status") == 200:
+                seen = set()
+                for item in res.get("data", []):
+                    c = str(item.get("stock_id", "")).strip()
+                    n = str(item.get("stock_name", "")).strip()
+                    m = str(item.get("type", "")).strip()
+                    if len(c) == 4 and c.isdigit() and not c.startswith("00") and n and c not in seen:
+                        seen.add(c)
+                        sfx = ".TWO" if m == "tpex" else ".TW"
+                        stocks.append({"ticker": f"{c}{sfx}", "title": f"{c} {n}"})
         except Exception:
             pass
     return stocks
 
 def scan_market(roll_win=35, rr_min=1.2):
-    candidates = get_active_stocks()
+    candidates = get_all_stocks()
+    print(f"📚 成功載入全市場清單：共 {len(candidates)} 檔上市櫃股票")
     if not candidates:
         return [], []
 
-    tickers = [c["ticker"] for c in candidates]
-    name_map = {c["ticker"]: c["title"] for c in candidates}
+    # 挑選前 300 檔主流標的批次下載（避免單次請求過大逾時，約 15 秒完成）
+    target_list = candidates[:350]
+    tickers = [c["ticker"] for c in target_list]
+    name_map = {c["ticker"]: c["title"] for c in target_list}
     data = yf.download(tickers, period="6mo", group_by="ticker", progress=False, threads=True)
     
-    trend_list = []   # 順勢主升段模式
-    dip_list = []     # 高點後修正低接模式
+    trend_list, dip_list = [], []
 
     for t in tickers:
         try:
@@ -68,8 +86,13 @@ def scan_market(roll_win=35, rr_min=1.2):
             if len(df) < 65:
                 continue
 
+            # 流動性濾網：近 5 日均量大於 1,000 張（1,000,000 股）且股價大於 15 元
+            avg_vol = float(df["Volume"].tail(5).mean())
+            curr = float(df["Close"].iat[-1])
+            if avg_vol < 1000000 or curr < 15.0:
+                continue
+
             sub = df.tail(roll_win)
-            curr = float(sub["Close"].iat[-1])
             hi, lo = float(sub["High"].max()), float(sub["Low"].min())
             diff = hi - lo
             if diff <= 0:
@@ -95,25 +118,22 @@ def scan_market(roll_win=35, rr_min=1.2):
             ma60 = float(df["Close"].rolling(60).mean().iat[-1])
 
             if curr >= ma60 and ma20 >= ma60:
-                # 模式一：順勢主升段（回測 0.382 / 月線淺支撐）
                 anchor = max(f382, ma20)
                 b_hi = anchor + min(0.15 * atr, anchor * 0.005)
                 b_lo = anchor - min(0.25 * atr, anchor * 0.015)
-                if not (b_lo * 0.985 <= curr <= b_hi * 1.025 and 40 <= rsi <= 68):
+                if not (b_lo * 0.985 <= curr <= b_hi * 1.025 and 40 <= rsi <= 70):
                     continue
                 sl = min(f500, ma60) - 0.3 * atr
                 tp1, tp2 = hi, ext1272
-                tp_tag = "波段前高 / 1.272延伸"
                 avg_b = (b_hi + b_lo) / 2
                 rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     trend_list.append({
                         "title": name_map[t], "price": curr, "peak_date": peak_date,
                         "b_lo": b_lo, "b_hi": b_hi, "sl": sl,
-                        "tp1": tp1, "tp2": tp2, "tp_tag": tp_tag, "rsi": rsi, "rr": rr
+                        "tp1": tp1, "tp2": tp2, "tp_tag": "波段前高 / 1.272延伸", "rsi": rsi, "rr": rr
                     })
             else:
-                # 模式二：高點轉折修正後回測 0.618 支撐
                 anchor = f618
                 b_hi = anchor + min(0.15 * atr, anchor * 0.005)
                 b_lo = max(lo, anchor - min(0.25 * atr, anchor * 0.015))
@@ -123,14 +143,13 @@ def scan_market(roll_win=35, rr_min=1.2):
                 tp1, tp2 = min(ma20, f500), f382
                 if tp1 > tp2:
                     tp1, tp2 = tp2, tp1
-                tp_tag = "0.500反彈 / 0.382減碼"
                 avg_b = (b_hi + b_lo) / 2
                 rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     dip_list.append({
                         "title": name_map[t], "price": curr, "peak_date": peak_date,
                         "b_lo": b_lo, "b_hi": b_hi, "sl": sl,
-                        "tp1": tp1, "tp2": tp2, "tp_tag": tp_tag, "rsi": rsi, "rr": rr
+                        "tp1": tp1, "tp2": tp2, "tp_tag": "0.500反彈 / 0.382減碼", "rsi": rsi, "rr": rr
                     })
         except Exception:
             continue
