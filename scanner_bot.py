@@ -41,7 +41,7 @@ def get_active_stocks(min_lots=1000, min_price=15.0):
             pass
     return stocks
 
-def scan_market(days=90, rr_min=2.0):
+def scan_market(roll_win=35, rr_min=2.0):
     candidates = get_active_stocks()
     if not candidates:
         return [], []
@@ -51,20 +51,22 @@ def scan_market(days=90, rr_min=2.0):
     data = yf.download(tickers, period="1y", group_by="ticker", progress=False, threads=True)
     
     trend_list = []   # 順勢主升段模式
-    dip_list = []     # 黃金回檔抄底模式
+    dip_list = []     # 高點後修正低接模式
 
     for t in tickers:
         try:
             df = data[t].dropna()
-            if len(df) < days:
+            if len(df) < 65:
                 continue
-            sub = df.tail(days)
+
+            sub = df.tail(roll_win)
             curr = float(sub["Close"].iat[-1])
             hi, lo = float(sub["High"].max()), float(sub["Low"].min())
             diff = hi - lo
             if diff <= 0:
                 continue
 
+            peak_date = sub["High"].idxmax().strftime("%m/%d")
             f382, f500, f618 = hi - diff * 0.382, hi - diff * 0.500, hi - diff * 0.618
             ext1272 = hi + diff * 0.272
 
@@ -82,10 +84,9 @@ def scan_market(days=90, rr_min=2.0):
 
             ma20 = float(df["Close"].rolling(20).mean().iat[-1])
             ma60 = float(df["Close"].rolling(60).mean().iat[-1])
-            is_uptrend = (curr > ma60) and (ma20 >= ma60)
 
-            if is_uptrend:
-                # 模式一：順勢主升段（回測 0.382 / 月線淺支撐，且 RSI 未過熱）
+            if curr >= ma60 and ma20 >= ma60:
+                # 模式一：順勢主升段（回測 0.382 / 月線淺支撐，移動停利隨高點上移）
                 anchor = max(f382, ma20)
                 b_hi = anchor + min(0.15 * atr, anchor * 0.005)
                 b_lo = anchor - min(0.25 * atr, anchor * 0.015)
@@ -93,30 +94,30 @@ def scan_market(days=90, rr_min=2.0):
                     continue
                 sl = min(f500, ma60) - 0.3 * atr
                 tp1, tp2 = hi, ext1272
-                tp_tag = "前波高點 / 1.272延伸"
+                tp_tag = "波段前高 / 1.272延伸"
                 avg_b = (b_hi + b_lo) / 2
                 rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     trend_list.append({
-                        "title": name_map[t], "price": curr,
+                        "title": name_map[t], "price": curr, "peak_date": peak_date,
                         "b_lo": b_lo, "b_hi": b_hi, "sl": sl,
                         "tp1": tp1, "tp2": tp2, "tp_tag": tp_tag, "rsi": rsi, "rr": rr
                     })
             else:
-                # 模式二：黃金回檔抄底（落入 0.618 支撐帶且 RSI 低檔）
+                # 模式二：高點轉折修正後回測 0.618 支撐（賣點動態下修為反彈減碼位）
                 anchor = f618
                 b_hi = anchor + min(0.15 * atr, anchor * 0.005)
                 b_lo = max(lo, anchor - min(0.25 * atr, anchor * 0.015))
                 if not (b_lo <= curr <= b_hi * 1.015 and rsi < 42):
                     continue
                 sl = lo - 0.5 * atr
-                tp1, tp2 = f500, f382
-                tp_tag = "0.500中軸 / 0.382反彈"
+                tp1, tp2 = min(ma20, f500), f382
+                tp_tag = "月線or0.5反彈 / 0.382減碼"
                 avg_b = (b_hi + b_lo) / 2
                 rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     dip_list.append({
-                        "title": name_map[t], "price": curr,
+                        "title": name_map[t], "price": curr, "peak_date": peak_date,
                         "b_lo": b_lo, "b_hi": b_hi, "sl": sl,
                         "tp1": tp1, "tp2": tp2, "tp_tag": tp_tag, "rsi": rsi, "rr": rr
                     })
@@ -131,12 +132,12 @@ def format_items(items, start_idx):
     blocks = []
     for idx, s in enumerate(items, start_idx):
         blocks.append(
-            f"{idx}. {s['title']}（現價 {s['price']:.1f} 元）\n"
-            f"   🟢 精準買進：{s['b_lo']:.1f} ～ {s['b_hi']:.1f} 元\n"
+            f"{idx}. {s['title']}（現價 {s['price']:.1f}｜高點 {s['peak_date']}）\n"
+            f"   🟢 動態買進：{s['b_lo']:.1f} ～ {s['b_hi']:.1f} 元\n"
             f"      （第一批：{s['b_hi']:.1f} ｜ 第二批：{s['b_lo']:.1f}）\n"
-            f"   🔴 嚴格停損：{s['sl']:.1f} 元\n"
-            f"   🎯 雙停利目標（{s['tp_tag']}）：\n"
-            f"      第一停利 {s['tp1']:.1f} 元 ｜ 第二停利 {s['tp2']:.1f} 元\n"
+            f"   🔴 移動停損：{s['sl']:.1f} 元\n"
+            f"   🎯 修正賣點（{s['tp_tag']}）：\n"
+            f"      第一賣點 {s['tp1']:.1f} 元 ｜ 第二賣點 {s['tp2']:.1f} 元\n"
             f"   📊 賺賠比：{s['rr']:.1f} 倍 ｜ RSI：{s['rsi']:.1f}"
         )
     return blocks
@@ -147,22 +148,22 @@ if __name__ == "__main__":
     
     if not trends and not dips:
         msg = (
-            f"📊 【AI 多空雙模式選股日報】{today}\n\n"
-            f"今日全市場掃描完畢，目前無同時符合「順勢淺回檔」或「0.618抄底」且賺賠比≥2之標的，建議保留現金觀望。\n\n"
+            f"📊 【AI 動態波浪選股日報】{today}\n\n"
+            f"今日全市場掃描完畢，目前無符合「動態滾動支撐 + 賺賠比≥2」之標的，建議保留現金觀望。\n\n"
             f"📱 手機看盤 APP：{APP_URL}"
         )
     else:
         lines = [
-            f"🚀 【AI 波浪黃金分割雙模式日報】\n"
-            f"日期：{today} ｜ 窄幅2%掛單 | 賺賠比≥2\n" + "=" * 22
+            f"🚀 【AI 動態波浪黃金分割選股日報】\n"
+            f"日期：{today} ｜ 35日滾動防線 | 賺賠比≥2\n" + "=" * 22
         ]
         if trends:
-            lines.append("🔥 【順勢主升段模式】（站穩季線，抓0.382/月線回檔）")
+            lines.append("🔥 【順勢主升段】（站穩季線，回測0.382/月線）")
             lines.extend(format_items(trends, 1))
         if dips:
-            lines.append("🛡️ 【黃金回檔抄底模式】（修正波段，嚴守0.618支撐）")
+            lines.append("🛡️ 【高點轉折修正】（回測0.618，反彈看動態賣點）")
             lines.extend(format_items(dips, len(trends) + 1))
-        lines.append(f"📱 點擊開啟互動圖表 APP：\n{APP_URL}")
+        lines.append(f"📱 點擊開啟動態防線圖表 APP：\n{APP_URL}")
         msg = "\n\n".join(lines)
 
     print(msg)
