@@ -3,74 +3,86 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
+from datetime import datetime, timedelta
 
-# 設定手機版面適應
 st.set_page_config(page_title="AI 波浪黃金分割決策 APP", layout="centered")
 
 st.title("📈 AI 波浪與黃金分割決策 APP")
-st.caption("整合：波段高低點 + 費波那契回檔 + RSI動能 + 量能確認 + ATR動態風控")
+st.caption("整合：波段高低點 + 費波那契回檔 + RSI動能 + 量能確認 + 三大法人主力動態")
 
-# 1. 載入全市場台股代號與中文股名對照表（每日自動更新並快取）
-@st.cache_data(ttl=86400)
-def load_stock_mapping():
-    code_map = {}  # 代號 -> (yf_ticker, 完整顯示名稱)
-    name_map = {}  # 股名 -> (yf_ticker, 完整顯示名稱)
+# 1. 載入全市場台股代號與中文股名對照表（雙重備援）
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_mapping_from_sources():
+    code_map = {}
+    name_map = {}
     
-    # 抓取上市清單 (TWSE)
+    # 來源 A1：證交所上市清單 (TWSE)
     try:
         twse_url = "https://twse.com.tw"
-        for item in requests.get(twse_url, timeout=10).json():
+        res = requests.get(twse_url, timeout=8).json()
+        for item in res:
             code = item.get("Code", "").strip()
             name = item.get("Name", "").strip()
             if code and name:
-                ticker = f"{code}.TW"
-                display = f"{code} {name}"
-                code_map[code] = (ticker, display)
-                name_map[name] = (ticker, display)
+                code_map[code] = (f"{code}.TW", f"{code} {name}", code)
+                name_map[name] = (f"{code}.TW", f"{code} {name}", code)
     except Exception:
         pass
 
-    # 抓取上櫃清單 (TPEx)
+    # 來源 A2：櫃買中心上櫃清單 (TPEx)
     try:
         tpex_url = "https://tpex.org.tw"
-        for item in requests.get(tpex_url, timeout=10).json():
+        res = requests.get(tpex_url, timeout=8).json()
+        for item in res:
             code = item.get("SecuritiesCompanyCode", "").strip()
             name = item.get("CompanyName", "").strip()
             if code and name:
-                ticker = f"{code}.TWO"
-                display = f"{code} {name}"
-                code_map[code] = (ticker, display)
-                name_map[name] = (ticker, display)
+                code_map[code] = (f"{code}.TWO", f"{code} {name}", code)
+                name_map[name] = (f"{code}.TWO", f"{code} {name}", code)
     except Exception:
         pass
 
+    # 來源 B：FinMind 台股總表備援
+    if len(code_map) < 500:
+        try:
+            fm_url = "https://finmindtrade.com"
+            fm_res = requests.get(fm_url, params={"dataset": "TaiwanStockInfo"}, timeout=10).json()
+            if fm_res.get("status") == 200:
+                for item in fm_res.get("data", []):
+                    code = str(item.get("stock_id", "")).strip()
+                    name = str(item.get("stock_name", "")).strip()
+                    market = str(item.get("type", "")).strip()
+                    if len(code) == 4 and code.isdigit() and name:
+                        suffix = ".TWO" if market == "tpex" else ".TW"
+                        code_map[code] = (f"{code}{suffix}", f"{code} {name}", code)
+                        name_map[name] = (f"{code}{suffix}", f"{code} {name}", code)
+        except Exception:
+            pass
+
     return code_map, name_map
 
-# 2. 智慧解析使用者輸入（支援代號、完整股名、部分關鍵字）
+def get_stock_mapping():
+    code_map, name_map = _fetch_mapping_from_sources()
+    if not code_map:
+        _fetch_mapping_from_sources.clear()
+    return code_map, name_map
+
+# 2. 智慧解析使用者輸入（支援代號、完整股名、關鍵字）
 def resolve_stock_query(query, code_map, name_map):
     q = query.strip().upper()
     if not q:
-        return None, None
-        
-    # 完全符合代號
+        return None, None, None
     if q in code_map:
         return code_map[q]
-        
-    # 完全符合中文股名
     if q in name_map:
         return name_map[q]
-        
-    # 模糊比對中文股名（例如輸入「台積」自動找到「台積電」）
     matches = [info for name, info in name_map.items() if q in name]
     if matches:
-        # 優先回傳名稱最短（最接近）的標的
         matches.sort(key=lambda x: len(x[1]))
         return matches[0]
-        
-    # 若對照表暫時連線異常，保留直接嘗試代號的備援機制
-    return None, q
+    return None, q, q
 
-# 3. 抓取台股歷史數據函式
+# 3. 抓取台股歷史價量數據
 @st.cache_data(ttl=1800)
 def get_stock_data(resolved_ticker, fallback_code):
     if resolved_ticker:
@@ -79,17 +91,43 @@ def get_stock_data(resolved_ticker, fallback_code):
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             return df, resolved_ticker
-            
-    # 備援嘗試
-    for suffix in [".TWO", ".TW"]:
-        df = yf.download(f"{fallback_code}{suffix}", period="1y", progress=False)
-        if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            return df, f"{fallback_code}{suffix}"
+    if fallback_code.isdigit():
+        for suffix in [".TW", ".TWO"]:
+            df = yf.download(f"{fallback_code}{suffix}", period="1y", progress=False)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                return df, f"{fallback_code}{suffix}"
     return pd.DataFrame(), None
 
-# 4. 核心指標與買賣區間運算引擎
+# 4. 抓取三大法人主力買賣超動態
+@st.cache_data(ttl=1800)
+def get_institutional_investors(stock_code):
+    try:
+        start_date = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
+        url = "https://finmindtrade.com"
+        params = {
+            "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+            "data_id": stock_code,
+            "start_date": start_date
+        }
+        res = requests.get(url, params=params, timeout=10).json()
+        if res.get("status") == 200 and res.get("data"):
+            df_inst = pd.DataFrame(res["data"])
+            df_inst["net_lots"] = (df_inst["buy"] - df_inst["sell"]) / 1000.0
+            pivot_df = df_inst.pivot_table(index="date", columns="name", values="net_lots", aggfunc="sum").fillna(0)
+            
+            result = pd.DataFrame(index=pivot_df.index)
+            result["外資"] = pivot_df.get("Foreign_Investor", 0) + pivot_df.get("Foreign_Dealer_Self", 0)
+            result["投信"] = pivot_df.get("Investment_Trust", 0)
+            result["自營商"] = pivot_df.get("Dealer_self", 0) + pivot_df.get("Dealer_Hedging", 0)
+            result["三大法人合計"] = result["外資"] + result["投信"] + result["自營商"]
+            return result.tail(5)
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+# 5. 核心指標與買賣區間運算引擎
 def analyze_stock(df, days):
     sub_df = df.tail(days).copy()
     current_price = float(sub_df['Close'].iloc[-1])
@@ -141,23 +179,24 @@ def analyze_stock(df, days):
         "stop_loss": stop_loss, "tp1": tp1, "tp2": tp2, "rr_ratio": rr_ratio
     }
 
-# 5. 使用者介面互動區
-code_map, name_map = load_stock_mapping()
+# 6. 使用者介面互動區
+code_map, name_map = get_stock_mapping()
 
-user_query = st.text_input("輸入台股代號或股名（例如：4908、前鼎、聯亞）", value="4908")
+user_query = st.text_input("輸入台股代號或股名（例如：2340、台亞、前鼎、聯亞）", value="2340")
 lookback_days = st.slider("波段觀察天數（決定高低點基準）", min_value=30, max_value=240, value=90)
 rr_threshold = st.number_input("最低要求風險報酬比（賺賠比）", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
 
-if st.button("🚀 啟動 AI 量化診斷", use_container_width=True):
-    with st.spinner("正在配對個股並運算波浪結構與波動率指標..."):
-        resolved_ticker, display_title = resolve_stock_query(user_query, code_map, name_map)
+if st.button("🚀 啟動 AI 量化與籌碼診斷", use_container_width=True):
+    with st.spinner("正在運算波浪結構、黃金分割與三大法人主力籌碼..."):
+        resolved_ticker, display_title, pure_code = resolve_stock_query(user_query, code_map, name_map)
         df, final_ticker = get_stock_data(resolved_ticker, user_query.strip())
         
         if df.empty:
-            st.error(f"找不到「{user_query}」的相關資料，請確認輸入的代號或中文股名是否正確。")
+            st.error(f"找不到「{user_query}」的相關資料，請確認輸入的代號或中文股名是否正確（例如輸入 2340 或 台亞）。")
         else:
             res = analyze_stock(df, lookback_days)
             title_text = display_title if resolved_ticker else final_ticker
+            clean_code = pure_code if pure_code else str(final_ticker).split(".")[0]
             
             st.subheader(f"📊 {title_text} 量化交易計畫")
             
@@ -187,12 +226,29 @@ if st.button("🚀 啟動 AI 量化診斷", use_container_width=True):
                 st.info("ℹ️ **【等待回測】** 股價尚未落入 0.618 黃金買進區或 RSI 尚未超賣，建議耐心等待拉回買點。")
             
             st.divider()
-            st.markdown("### 📉 走勢與黃金分割關鍵防線圖")
+            st.markdown("### 🏦 三大法人主力進出動態（近 5 交易日，單位：張）")
             
-            chart_df = pd.DataFrame(index=df.tail(lookback_days).index)
-            chart_df['收盤價'] = df['Close'].tail(lookback_days)
-            chart_df['第一停利 (0.382)'] = res['tp1']
-            chart_df['黃金買進線 (0.618)'] = res['fib_618']
-            chart_df['嚴格停損線'] = res['stop_loss']
-            
-            st.line_chart(chart_df, color=["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"])
+            df_inst = get_institutional_investors(clean_code)
+            if not df_inst.empty:
+                net_5d = df_inst["三大法人合計"].sum()
+                foreign_5d = df_inst["外資"].sum()
+                trust_5d = df_inst["投信"].sum()
+                
+                ic1, ic2, ic3 = st.columns(3)
+                ic1.metric("近5日法人合計", f"{net_5d:+.0f} 張", "主力偏多吸籌" if net_5d > 0 else "主力偏空調節")
+ic2.metric("近5日外資動向", f"{foreign_5d:+.0f} 張")
+ic3.metric("近5日投信動向", f"{trust_5d:+.0f} 張")
+st.bar_chart(df_inst[["外資", "投信", "自營商"]], color=["#2980b9", "#e74c3c", "#f39c12"])
+st.dataframe(df_inst.round(0).astype(int), use_container_width=True)
+else:
+st.info("盤後法人籌碼更新中（通常於交易日下午 15:30～16:30 陸續公布），或暫無近期法人進出紀錄。")
+yahoo_suffix = "TWO" if ".TWO" in str(final_ticker) else "TW"
+st.markdown(f"👉 點擊查看 {clean_code} 券商分點主力買賣超明細（Yahoo股市）")
+st.divider()
+st.markdown("### 📉 走勢與黃金分割關鍵防線圖")
+chart_df = pd.DataFrame(index=df.tail(lookback_days).index)
+chart_df['收盤價'] = df['Close'].tail(lookback_days)
+chart_df['第一停利 (0.382)'] = res['tp1']
+chart_df['黃金買進線 (0.618)'] = res['fib_618']
+chart_df['嚴格停損線'] = res['stop_loss']
+st.line_chart(chart_df, color=["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"])
