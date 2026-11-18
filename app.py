@@ -19,7 +19,7 @@ BUILTIN = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_maps():
-    c_map, n_map = dict(BUILTIN), {v[1].split(" ")[1]: v for v in BUILTIN.values()}
+    c_map, n_map = dict(BUILTIN), {v.split(" "): v for v in BUILTIN.values()}
     try:
         res = requests.get("https://githubusercontent.com", timeout=8)
         if res.status_code == 200:
@@ -45,11 +45,11 @@ def find_stock(q, c_map, n_map):
     q = q.strip().upper()
     if q in c_map: return c_map[q]
     if q in n_map: return n_map[q]
-    for name, info in sorted(n_map.items(), key=lambda x: len(x[0])):
+    for name, info in sorted(n_map.items(), key=lambda x: len(x)):
         if q in name: return info
     return (f"{q}.TW", q) if q.isdigit() else (None, q)
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_data(ticker, raw_q):
     cands = ([ticker] if ticker else []) + ([f"{raw_q}.TW", f"{raw_q}.TWO"] if raw_q.isdigit() else [])
     for t in dict.fromkeys(cands):
@@ -60,7 +60,7 @@ def fetch_data(ticker, raw_q):
             return df, t
     return pd.DataFrame(), None
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_inst(code):
     try:
         start = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
@@ -81,13 +81,22 @@ def fetch_inst(code):
 
 c_map, n_map = get_maps()
 q = st.text_input("輸入台股代號或股名（例：亞光、大立光、元太、雙鴻、聯亞）", value="亞光")
+
+# 即時預覽：輸入完股名立刻秀出最新收盤價與漲跌
+ticker, title = find_stock(q, c_map, n_map)
+df, f_ticker = fetch_data(ticker, q.strip())
+if not df.empty and len(df) >= 2:
+    p_now, p_prev = float(df["Close"].iat[-1]), float(df["Close"].iat[-2])
+    chg = p_now - p_prev
+    st.info(f"📌 **{title}** ｜ 最新收盤價：**`{p_now:.1f} 元`**（{chg:+.1f} 元 / {chg/p_prev*100:+.2f}%）")
+elif q.strip():
+    st.warning(f"⚠️ 暫時找不到「{q}」的報價，請確認代號或股名。")
+
 col_in1, col_in2 = st.columns(2)
 roll_win = col_in1.slider("動態滾動波浪週期", 20, 90, 35)
 custom_buy = col_in2.number_input("自訂試算買進價（0 = 用系統低接價）", min_value=0.0, value=0.0, step=0.5)
 
 if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
-    ticker, title = find_stock(q, c_map, n_map)
-    df, f_ticker = fetch_data(ticker, q.strip())
     if df.empty:
         st.error(f"找不到「{q}」的資料，請確認輸入是否正確。")
     else:
@@ -123,11 +132,10 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
             b_hi, b_lo, sl = lo + min(0.2 * atr, lo * 0.01), lo, lo - 0.5 * atr
             tp1, tp2, tp1_l, tp2_l = f618, f500, "0.618逃命點", "0.500壓力點"
 
-        # 依據自訂買進價或系統建議中值計算專屬賺賠比
         calc_entry = custom_buy if custom_buy > 0 else (b_hi + b_lo) / 2
         risk_amt, reward_amt = calc_entry - sl, tp1 - calc_entry
         rr = reward_amt / risk_amt if risk_amt > 0 else 0
-        code = f_ticker.split(".")[0]
+        code = f_ticker.split(".")
 
         st.subheader(f"📊 {title} 動態交易計畫")
         st.info(f"**{status}**（近 {roll_win} 日高點：`{peak_date}` 的 `{hi:.1f} 元`）")
