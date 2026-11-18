@@ -7,29 +7,28 @@ from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_TOKEN", "").strip()
 LINE_USER_ID = os.getenv("LINE_USER_ID", "").strip()
-APP_URL = "https://james-stockapp.streamlit.app/"
+APP_URL = "https://streamlit.app"
 
 def send_line(msg):
     if not LINE_TOKEN or not LINE_USER_ID:
         print("⚠️ 未設定 LINE 金鑰，略過推播")
         return
-    url = "https://line.me"
+    api_endpoint = "https://line.me"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}",
-        "User-Agent": "Mozilla/5.0"
+        "Authorization": f"Bearer {LINE_TOKEN}"
     }
     payload = {
         "to": LINE_USER_ID,
         "messages": [{"type": "text", "text": msg}]
     }
-    res = requests.post(url, headers=headers, json=payload, timeout=15)
+    res = requests.post(api_endpoint, headers=headers, json=payload, timeout=15)
     if res.status_code == 200:
         print("✅ LINE 推播成功！")
     else:
-        print(f"❌ 推播失敗 ({res.status_code})：{res.text}")
+        print(f"❌ 推播失敗 ({res.status_code}) | URL: {res.url} | 回應: {res.text}")
 
-def get_active_stocks(min_lots=1000, min_price=15.0):
+def get_active_stocks(min_lots=1500, min_price=15.0):
     stocks = []
     apis = [
         ("https://twse.com.tw", "Code", "Name", "TradeVolume", "ClosingPrice", ".TW"),
@@ -51,7 +50,7 @@ def get_active_stocks(min_lots=1000, min_price=15.0):
             pass
     return stocks
 
-def scan_market(roll_win=35, rr_min=1.5):
+def scan_market(roll_win=35, rr_min=1.2):
     candidates = get_active_stocks()
     if not candidates:
         return [], []
@@ -100,13 +99,13 @@ def scan_market(roll_win=35, rr_min=1.5):
                 anchor = max(f382, ma20)
                 b_hi = anchor + min(0.15 * atr, anchor * 0.005)
                 b_lo = anchor - min(0.25 * atr, anchor * 0.015)
-                if not (b_lo * 0.985 <= curr <= b_hi * 1.025 and 40 <= rsi <= 70):
+                if not (b_lo * 0.985 <= curr <= b_hi * 1.025 and 40 <= rsi <= 68):
                     continue
                 sl = min(f500, ma60) - 0.3 * atr
                 tp1, tp2 = hi, ext1272
                 tp_tag = "波段前高 / 1.272延伸"
                 avg_b = (b_hi + b_lo) / 2
-                rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
+                rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     trend_list.append({
                         "title": name_map[t], "price": curr, "peak_date": peak_date,
@@ -121,12 +120,12 @@ def scan_market(roll_win=35, rr_min=1.5):
                 if not (b_lo * 0.98 <= curr <= b_hi * 1.03 and rsi < 48):
                     continue
                 sl = lo - 0.5 * atr
-                tp1, tp2 = max(ma20, f500), f382
+                tp1, tp2 = min(ma20, f500), f382
                 if tp1 > tp2:
                     tp1, tp2 = tp2, tp1
                 tp_tag = "0.500反彈 / 0.382減碼"
                 avg_b = (b_hi + b_lo) / 2
-                rr = (tp1 - avg_b) / (avg_b - sl) if avg_b > sl else 0
+                rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0
                 if rr >= rr_min:
                     dip_list.append({
                         "title": name_map[t], "price": curr, "peak_date": peak_date,
@@ -150,7 +149,7 @@ def format_items(items, start_idx):
             f"   🔴 移動停損：{s['sl']:.1f} 元\n"
             f"   🎯 修正賣點（{s['tp_tag']}）：\n"
             f"      第一賣點 {s['tp1']:.1f} 元 ｜ 第二賣點 {s['tp2']:.1f} 元\n"
-            f"   📊 賺賠比：{s['rr']:.1f} 倍 ｜ RSI：{s['rsi']:.1f}"
+            f"   📊 波段賺賠比：{s['rr']:.1f} 倍 ｜ RSI：{s['rsi']:.1f}"
         )
     return blocks
 
@@ -161,13 +160,13 @@ if __name__ == "__main__":
     if not trends and not dips:
         msg = (
             f"📊 【AI 動態波浪選股日報】{today}\n\n"
-            f"今日全市場掃描完畢，目前無符合「動態滾動支撐 + 賺賠比≥1.5」之標的，建議保留現金觀望。\n\n"
+            f"今日全市場掃描完畢，目前無符合「動態滾動支撐 + 賺賠比≥1.2」之標的，建議保留現金觀望。\n\n"
             f"📱 手機看盤 APP：{APP_URL}"
         )
     else:
         lines = [
             f"🚀 【AI 動態波浪黃金分割選股日報】\n"
-            f"日期：{today} ｜ 35日滾動防線 | 賺賠比≥1.5\n" + "=" * 22
+            f"日期：{today} ｜ 35日滾動防線 | 賺賠比≥1.2\n" + "=" * 22
         ]
         if trends:
             lines.append("🔥 【順勢主升段】（站穩季線，回測0.382/月線）")
