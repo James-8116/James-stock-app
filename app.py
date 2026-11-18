@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import altair as alt
 
 st.set_page_config(page_title="AI 動態波浪黃金分割決策 APP", layout="centered")
-st.title("📈 AI 動態波浪與黃金分割決策 APP")
+st.title("📈 AI 波浪與黃金分割決策 APP")
 st.caption("升級版：逐日滾動重算高低點 + 移動停利防線 + 轉折修正賣點")
 
 BUILTIN = {
@@ -54,7 +54,9 @@ def fetch_data(ticker, raw_q):
     for t in dict.fromkeys(candidates):
         df = yf.download(t, period="1y", progress=False)
         if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns.name = None
             return df, t
     return pd.DataFrame(), None
 
@@ -88,7 +90,6 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
     if df.empty:
         st.error(f"找不到「{q}」的資料，請確認輸入是否正確。")
     else:
-        # 逐日滾動計算每天的動態高低點與移動防線（不再是死板的直線）
         df = df.copy()
         df['roll_hi'] = df['High'].rolling(roll_win).max()
         df['roll_lo'] = df['Low'].rolling(roll_win).min()
@@ -104,7 +105,6 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
         tr = np.max(pd.concat([df['High'] - df['Low'], np.abs(df['High'] - df['Close'].shift()), np.abs(df['Low'] - df['Close'].shift())], axis=1), axis=1)
         df['atr'] = tr.rolling(14).mean()
 
-        # 動態移動停利/支撐防線：多頭時跟著高點上移，跌破後轉為反彈減碼壓力線
         df['動態停利壓力'] = np.where(df['Close'] >= df['ma20'], df['roll_hi'], df['dyn_382'])
         df['動態買進支撐'] = np.where(df['Close'] >= df['ma20'], df['dyn_382'], df['dyn_618'])
         df['動態移動停損'] = np.where(df['Close'] >= df['ma20'], df['dyn_500'] - 0.3 * df['atr'], df['roll_lo'] - 0.5 * df['atr'])
@@ -117,7 +117,6 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
         ma20, ma60 = float(latest['ma20']), float(latest['ma60'])
         rsi, atr = float(latest['rsi']), float(latest['atr'])
 
-        # 根據最新一天的位階，動態修正買點與賣點
         if curr >= ma20 and curr >= f382:
             status = "🔥 【主升段移動停利模式】（沿月線與 0.382 強勢推進）"
             anchor = max(f382, ma20)
@@ -171,27 +170,28 @@ if st.button("🚀 啟動 AI 動態波浪診斷", use_container_width=True):
             st.caption("盤後籌碼更新中或暫無紀錄。")
 
         st.markdown("### 📉 動態滾動買賣防線走勢圖（近 90 交易日）")
-        plot_df = df.tail(90).reset_index()
-        date_col = plot_df.columns
-        melt_df = plot_df.melt(
-            id_vars=[date_col],
-            value_vars=['Close', '動態停利壓力', '動態買進支撐', '動態移動停損'],
-            var_name='指標線',
-            value_name='價格'
-        )
-        melt_df['指標線'] = melt_df['指標線'].replace({'Close': '收盤價'})
+        sub90 = df.tail(90)
+        dates = pd.to_datetime(sub90.index)
+        line_map = {
+            "收盤價": sub90["Close"].to_numpy(dtype=float),
+            "動態停利壓力": sub90["動態停利壓力"].to_numpy(dtype=float),
+            "動態買進支撐": sub90["動態買進支撐"].to_numpy(dtype=float),
+            "動態移動停損": sub90["動態移動停損"].to_numpy(dtype=float),
+        }
+        frames = [pd.DataFrame({"日期": dates, "指標線": lbl, "價格": vals}) for lbl, vals in line_map.items()]
+        chart_df = pd.concat(frames, ignore_index=True).dropna()
 
-        y_min = melt_df['價格'].min() * 0.96
-        y_max = melt_df['價格'].max() * 1.04
+        y_min = float(chart_df["價格"].min()) * 0.96
+        y_max = float(chart_df["價格"].max()) * 1.04
 
-        chart = alt.Chart(melt_df).mark_line(strokeWidth=2).encode(
-            x=alt.X(f'{date_col}:T', title='日期'),
-            y=alt.Y('價格:Q', scale=alt.Scale(domain=[y_min, y_max]), title='價格 (元)'),
-            color=alt.Color('指標線:N', scale=alt.Scale(
-                domain=['收盤價', '動態停利壓力', '動態買進支撐', '動態移動停損'],
-                range=['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
+        chart = alt.Chart(chart_df).mark_line(strokeWidth=2).encode(
+            x=alt.X("日期:T", title="日期"),
+            y=alt.Y("價格:Q", scale=alt.Scale(domain=[y_min, y_max]), title="價格 (元)"),
+            color=alt.Color("指標線:N", scale=alt.Scale(
+                domain=["收盤價", "動態停利壓力", "動態買進支撐", "動態移動停損"],
+                range=["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
             )),
-            tooltip=[alt.Tooltip(f'{date_col}:T', title='日期'), '指標線:N', alt.Tooltip('價格:Q', format='.1f')]
+            tooltip=[alt.Tooltip("日期:T", title="日期"), "指標線:N", alt.Tooltip("價格:Q", format=".1f")]
         ).interactive()
 
         st.altair_chart(chart, use_container_width=True)
