@@ -18,7 +18,6 @@ def send_line(msg):
 
 def get_all_tw_stocks():
     pool = {}
-    # 來源 1：FinMind 全市場上市櫃總表（海外連線最穩，含完整中文股名）
     try:
         res = requests.get("https://finmindtrade.com", params={"dataset": "TaiwanStockInfo"}, timeout=12).json()
         if res.get("status") == 200:
@@ -28,7 +27,6 @@ def get_all_tw_stocks():
                     pool[f"{c}{'.TWO' if m == 'tpex' else '.TW'}"] = f"{c} {n}"
     except Exception:
         pass
-    # 來源 2：全球 CDN 台股總表補強
     try:
         res = requests.get("https://githubusercontent.com", timeout=10)
         if res.status_code == 200:
@@ -45,12 +43,10 @@ def get_all_tw_stocks():
 def scan_market(roll_win=35):
     pool = get_all_tw_stocks()
     tickers = list(pool.keys())
-    print(f"📚 開始掃描全市場上市櫃普通股：共 {len(tickers)} 檔")
     trends, dips = [], []
 
-    # 每 200 檔分批下載，兼顧全市場覆蓋與下載穩定度
-    for i in range(0, len(tickers), 200):
-        batch = tickers[i:i+200]
+    for i in range(0, len(tickers), 250):
+        batch = tickers[i:i+250]
         try:
             data = yf.download(batch, period="4mo", group_by="ticker", progress=False, threads=True)
         except Exception:
@@ -60,7 +56,7 @@ def scan_market(roll_win=35):
                 df = data[t].dropna() if len(batch) > 1 else data.dropna()
                 if len(df) < 60: continue
                 curr = float(df["Close"].iat[-1])
-                if float(df["Volume"].tail(5).mean()) < 800000 or curr < 15.0: continue
+                if float(df["Volume"].tail(5).mean()) < 1000000 or curr < 15.0: continue
 
                 sub = df.tail(roll_win)
                 hi, lo = float(sub["High"].max()), float(sub["Low"].min())
@@ -79,45 +75,40 @@ def scan_market(roll_win=35):
                     anchor = max(f382, ma20)
                     b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), anchor - min(0.25 * atr, anchor * 0.015)
                     dist_pct = abs(curr - anchor) / anchor
-                    if dist_pct <= 0.04 and 40 <= rsi <= 68:
+                    if dist_pct <= 0.06 and 38 <= rsi <= 72:
                         sl = min(f500, ma60) - 0.3 * atr
                         tp1, tp2 = hi, hi + diff * 0.272
                         avg_b = (b_hi + b_lo) / 2
-                        rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
-                        if rr >= 1.5:
-                            trends.append({"title": pool[t], "price": curr, "peak": peak_d, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "tag": "前高/1.272延伸", "rsi": rsi, "rr": rr, "dist": dist_pct})
+                        rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0.5
+                        trends.append({"title": pool[t], "price": curr, "peak": peak_d, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "tag": "前高/1.272延伸", "rsi": rsi, "rr": rr, "dist": dist_pct})
                 else:
                     anchor = f618
                     b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), max(lo, anchor - min(0.25 * atr, anchor * 0.015))
                     dist_pct = abs(curr - anchor) / anchor
-                    if dist_pct <= 0.05 and rsi < 45:
+                    if dist_pct <= 0.07 and rsi < 48:
                         sl = lo - 0.5 * atr
                         tp1, tp2 = min(ma20, f500), f382
                         if tp1 > tp2: tp1, tp2 = tp2, tp1
                         avg_b = (b_hi + b_lo) / 2
-                        rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
-                        if rr >= 1.5:
-                            dips.append({"title": pool[t], "price": curr, "peak": peak_d, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "tag": "0.5反彈/0.382減碼", "rsi": rsi, "rr": rr, "dist": dist_pct})
+                        rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 0.5
+                        dips.append({"title": pool[t], "price": curr, "peak": peak_d, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "tag": "0.5反彈/0.382減碼", "rsi": rsi, "rr": rr, "dist": dist_pct})
             except Exception:
                 continue
 
     trends.sort(key=lambda x: (-x["rr"], x["dist"]))
     dips.sort(key=lambda x: (-x["rr"], x["dist"]))
-    return trends[:4], dips[:4]
+    return trends[:3], dips[:3]
 
 if __name__ == "__main__":
     today = datetime.now().strftime("%Y-%m-%d")
     trends, dips = scan_market()
-    if not trends and not dips:
-        msg = f"📊 【AI 全市場動態波浪日報】{today}\n\n今日掃描全市場上市櫃股票完畢，暫無符合高賺賠比之標的，建議保留現金觀望。\n\n📱 開啟互動圖表 APP：\n{APP_URL}"
-    else:
-        lines = [f"🚀 【AI 全市場動態波浪選股日報】\n日期：{today} ｜ 1,800檔上市櫃全掃\n" + "=" * 22]
-        for label, group, start_i in [("🔥 【順勢主升段精選】（站穩季線）", trends, 1), ("🛡️ 【高點轉折低接精選】（0.618支撐）", dips, len(trends) + 1)]:
-            if group:
-                lines.append(label)
-                for idx, s in enumerate(group, start_i):
-                    lines.append(f"{idx}. {s['title']}（現價 {s['price']:.1f}｜高點 {s['peak']}）\n   🟢 買進：{s['b_lo']:.1f}～{s['b_hi']:.1f}（批1:{s['b_hi']:.1f}/批2:{s['b_lo']:.1f}）\n   🔴 停損：{s['sl']:.1f} ｜ 🎯 賣點({s['tag']})：{s['tp1']:.1f} / {s['tp2']:.1f}\n   📊 賺賠比：{s['rr']:.1f}倍 ｜ RSI：{s['rsi']:.1f}")
-        lines.append(f"📱 開啟動態防線圖表 APP：\n{APP_URL}")
-        msg = "\n\n".join(lines)
+    lines = [f"🚀 【AI 全市場動態波浪選股日報】\n日期：{today} ｜ 1,800檔上市櫃精選\n" + "=" * 22]
+    for label, group, start_i in [("🔥 【順勢主升段 Top 3】（站穩季線）", trends, 1), ("🛡️ 【高點轉折低接 Top 3】（0.618支撐）", dips, len(trends) + 1)]:
+        if group:
+            lines.append(label)
+            for idx, s in enumerate(group, start_i):
+                lines.append(f"{idx}. {s['title']}（現價 {s['price']:.1f}｜高點 {s['peak']}）\n   🟢 買進：{s['b_lo']:.1f}～{s['b_hi']:.1f}（批1:{s['b_hi']:.1f}/批2:{s['b_lo']:.1f}）\n   🔴 停損：{s['sl']:.1f} ｜ 🎯 賣點({s['tag']})：{s['tp1']:.1f} / {s['tp2']:.1f}\n   📊 賺賠比：{s['rr']:.1f}倍 ｜ RSI：{s['rsi']:.1f}")
+    lines.append(f"📱 開啟動態防線圖表 APP：\n{APP_URL}")
+    msg = "\n\n".join(lines)
     print(msg)
     send_line(msg)
