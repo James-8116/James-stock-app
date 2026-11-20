@@ -171,7 +171,6 @@ with tab1:
 
     if rows_out:
         st.table(pd.DataFrame(rows_out).set_index("代號"))
-
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
@@ -240,7 +239,7 @@ with tab2:
             opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
             cdf = market_data[sel_row["ticker"]].copy().reset_index()
-            date_col = cdf.columns
+            date_col = cdf.columns.tolist().pop(0)
             fibs = sel_row["fib_dict"]
             cdf["20日月線"] = cdf["Close"].rolling(20).mean()
             cdf["60日季線"] = cdf["Close"].rolling(60).mean()
@@ -262,7 +261,7 @@ with tab2:
                 {"指標": "黃金 0.500", "價格": fibs["0.500"]},
                 {"指標": "黃金 0.618", "價格": fibs["0.618"]},
             ])
-            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=, strokeWidth=1.6).encode(
+            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=list((6, 4)), strokeWidth=1.6).encode(
                 y="價格:Q",
                 color=alt.Color("指標:N")
             )
