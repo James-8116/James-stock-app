@@ -87,20 +87,20 @@ def monitor_holdings(stock_map):
             fib_ext_1272 = l60 + swing * 1.272
             fib_stop_786 = h60 - swing * 0.786
             dual_stop = max(ma60, fib_stop_786)
-            stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
+            stop_tag = "季線" if ma60 >= fib_stop_786 else "黃金0.786"
             pnl = ((curr_c - cost) / cost) * 100
 
             sigs = []
             if rsi < 30 and rsi > prev_rsi:
-                sigs.append(f"🟢RSI<30超賣勾頭(看5日線{ma5:.1f})")
+                sigs.append(f"🟢止跌反彈(看5日線{ma5:.1f})")
             elif rsi < 30:
-                sigs.append("⏳RSI<30超賣(等勾頭)")
-            if rsi >= 75: sigs.append("🔥RSI過熱高賣")
-            if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append(f"🚀達黃金1.272({fib_ext_1272:.1f})")
-            elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐達黃金0.618({fib_res_618:.1f})")
-            elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append(f"🎯達前高({h20:.1f})")
-            if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
-            if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}({dual_stop:.1f})停損")
+                sigs.append("⏳還在跌先觀望")
+            if rsi >= 75: sigs.append("🔥漲多過熱建議高賣")
+            if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append(f"🚀達延伸目標{fib_ext_1272:.1f}高賣")
+            elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐碰黃金壓力{fib_res_618:.1f}高賣")
+            elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append(f"🎯漲回前高{h20:.1f}高賣")
+            if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線先鎖利")
+            if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}{dual_stop:.1f}停損")
 
             status = " / ".join(sigs) if sigs else f"✅續抱(賣:{fib_res_618:.1f}/守:{dual_stop:.1f})"
             results.append({"id": stock_id, "name": name, "cost": cost, "close": curr_c, "pnl": pnl, "status": status, "alert": len(sigs) > 0})
@@ -165,7 +165,7 @@ def build_flex_message(today_str, holdings, top5):
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的", "size": "xs", "color": "#888888", "flex": 3},
             {"type": "text", "text": "成本➔現價", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
-            {"type": "text", "text": "損益/黃金攻守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
+            {"type": "text", "text": "損益/操作建議", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
         for h in holdings:
@@ -195,7 +195,7 @@ def build_flex_message(today_str, holdings, top5):
         body.append({"type": "separator", "margin": "xs"})
         for s in top5:
             c = "#D32F2F" if s["pct"] >= 0 else "#2E7D32"
-            tags = ("🔥共振" if s["is_conf"] else "") + ("🟢勾頭" if s["is_rsi_hook"] else "")
+            tags = ("🔥共振" if s["is_conf"] else "") + ("🟢止跌" if s["is_rsi_hook"] else "")
             body.append({"type": "box", "layout": "horizontal", "margin": "sm", "alignItems": "center", "contents": [
                 {"type": "box", "layout": "vertical", "flex": 3, "contents": [
                     {"type": "text", "text": f"{s['name']}{tags}", "size": "xs", "weight": "bold"},
@@ -218,7 +218,7 @@ def build_flex_message(today_str, holdings, top5):
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
                 {"type": "text", "text": "📊 台股 AI 波段監控與選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋超賣止跌監控", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋白話操作建議", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
