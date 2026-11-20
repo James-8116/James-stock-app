@@ -215,13 +215,13 @@ if twii:
     if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
         market_mood += " ｜ 🟢大盤超賣止跌勾頭"
     with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+                m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
-        m2.metric("🛡️ 60日季線防線", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
-        m3.metric("🏛️ 240日年線大底", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
-        m4.metric("📐 黃金 0.500 支撐", f"{twii['fib500']:,.0f}")
-        m5.metric("📐 黃金 0.618 支撐", f"{twii['fib618']:,.0f}")
-        m6.metric("⚠️ 極端延伸 1.272", f"{twii['fib_ext1272']:,.0f}")
+        m2.metric("🛡️ 中期生命線(季線)", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
+        m3.metric("🏛️ 長線牛熊線(年線)", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
+        m4.metric("📐 合理回檔(半山腰)", f"{twii['fib500']:,.0f}")
+        m5.metric("📐 深度回檔(最後防線)", f"{twii['fib618']:,.0f}")
+        m6.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
 
 if FINMIND_TOKEN:
     buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
