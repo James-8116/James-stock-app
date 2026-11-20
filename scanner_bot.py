@@ -8,9 +8,10 @@ LINE_TOKEN = os.environ.get("LINE_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
-FINMIND_URL = "https://finmindtrade.com"
-TWSE_T86_URL = "https://twse.com.tw"
-STREAMLIT_APP_URL = "https://streamlit.app"
+FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
+TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
+STREAMLIT_APP_URL = "https://james-stockapp" + ".streamlit" + ".app/"
+LINE_PUSH_URL = "https://api." + "line" + ".me/v2/bot/message/push"
 TW_TZ = timezone(timedelta(hours=8))
 
 
@@ -62,23 +63,15 @@ def get_twii_status():
         close = df["Close"]
         curr_c, prev_c = float(close.iloc[-1]), float(close.iloc[-2])
         ma60 = float(close.rolling(60).mean().iloc[-1])
-        ma240 = (
-            float(close.rolling(240).mean().iloc[-1])
-            if len(close) >= 240
-            else float(close.mean())
-        )
+        ma240 = float(close.rolling(240).mean().iloc[-1]) if len(close) >= 240 else float(close.mean())
         rsi_s = calculate_rsi(close, 14)
         rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
         sub = df.iloc[-60:]
         h60, l60 = float(sub["High"].max()), float(sub["Low"].min())
         swing = h60 - l60
         return {
-            "close": curr_c,
-            "pct": ((curr_c - prev_c) / prev_c) * 100,
-            "ma60": ma60,
-            "ma240": ma240,
-            "rsi": rsi,
-            "prev_rsi": prev_rsi,
+            "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
+            "ma60": ma60, "ma240": ma240, "rsi": rsi, "prev_rsi": prev_rsi,
             "is_bull": curr_c > ma60,
             "fib500": h60 - swing * 0.500,
             "fib618": h60 - swing * 0.618,
@@ -86,8 +79,6 @@ def get_twii_status():
         }
     except Exception:
         return None
-
-
 def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     swing = h60 - l60
     if swing <= 0:
@@ -151,21 +142,14 @@ def get_top5_institutional(stock_map):
             for r in rows:
                 sid = str(r.get("Code", "")).strip()
                 if sid in id_to_name:
-                    val = str(
-                        r.get("TotalInstitutionalInvestorsNetBuySell", "0")
-                    ).replace(",", "")
+                    val = str(r.get("TotalInstitutionalInvestorsNetBuySell", "0")).replace(",", "")
                     net_dict[sid] = float(val) / 1000
         except Exception:
             pass
     if not net_dict:
         return [], []
-    items = [
-        {"id": k, "name": id_to_name[k], "net": int(round(v))}
-        for k, v in net_dict.items()
-    ]
-    top_buy = sorted(
-        [x for x in items if x["net"] > 0], key=lambda x: x["net"], reverse=True
-    )[:5]
+    items = [{"id": k, "name": id_to_name[k], "net": int(round(v))} for k, v in net_dict.items()]
+    top_buy = sorted([x for x in items if x["net"] > 0], key=lambda x: x["net"], reverse=True)[:5]
     top_sell = sorted([x for x in items if x["net"] < 0], key=lambda x: x["net"])[:5]
     return top_buy, top_sell
 def run_screener(stock_map, is_bull_market=True, is_intraday=False):
@@ -315,7 +299,7 @@ def push_line_message(flex_msg):
         print("Missing LINE_TOKEN or LINE_USER_ID")
         return
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    res = requests.post("https://line.me", headers=headers, json={"to": LINE_USER_ID, "messages": [flex_msg]}, timeout=15)
+    res = requests.post(LINE_PUSH_URL, headers=headers, json={"to": LINE_USER_ID, "messages": [flex_msg]}, timeout=15)
     print("LINE Push Status:", res.status_code, res.text)
 
 
