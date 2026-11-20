@@ -12,8 +12,8 @@ FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", 
 FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
 
 DEFAULT_HOLDINGS = [
-    {"代號": "2891", "名稱": "中信金", "買進成本": 71.4},
-    {"代號": "5876", "名稱": "上海商銀", "買進成本": 50.9},
+    {"代號": "2891", "買進成本": 71.4},
+    {"代號": "5876", "買進成本": 50.9},
 ]
 
 def calculate_rsi(series, period=14):
@@ -83,12 +83,20 @@ def check_inst_buy_5d(stock_id, token):
 
 @st.cache_data(ttl=600)
 def fetch_single_stock(code):
-    df = yf.download(code + ".TW", period="4mo", progress=False)
+    ticker_str = code + ".TW"
+    df = yf.download(ticker_str, period="4mo", progress=False)
     if df.empty:
-        df = yf.download(code + ".TWO", period="4mo", progress=False)
+        ticker_str = code + ".TWO"
+        df = yf.download(ticker_str, period="4mo", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df
+    stock_name = code
+    try:
+        info = yf.Ticker(ticker_str).info
+        stock_name = info.get("shortName") or info.get("longName") or code
+    except Exception:
+        pass
+    return df, stock_name
 with st.sidebar:
     st.header("⚙️ 全市場選股參數微調")
     rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
@@ -110,18 +118,17 @@ st.title("📊 台股 AI 波段監控與選股看板")
 tab1, tab2 = st.tabs(["🔔 持股高賣與防守監控", "📉 黃金分割低接全市場掃描"])
 
 with tab1:
-    st.subheader("📋 持股高賣與防守即時監控（修改後按 Enter 自動更新）")
+    st.subheader("📋 持股高賣與防守即時監控（只需輸入代號與成本，按 Enter 自動帶出名稱與損益）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
     rows_out = []
     for _, r in edited_df.iterrows():
         code = str(r.get("代號", "")).strip()
-        name = str(r.get("名稱", "")).strip() or code
         cost = float(r.get("買進成本", 0) or 0)
         if not code or cost <= 0:
             continue
 
-        df = fetch_single_stock(code)
+        df, auto_name = fetch_single_stock(code)
         if df.empty or len(df) < 60:
             continue
 
@@ -141,7 +148,7 @@ with tab1:
         if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
 
         rows_out.append({
-            "代號": code, "名稱": name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
+            "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
             "RSI": f"{rsi:.1f}", "5日線": f"{ma5:.2f}", "月線賣點": f"{ma20:.2f}", "前高賣點": f"{h20:.2f}", "季線停損": f"{ma60:.2f}",
             "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
         })
