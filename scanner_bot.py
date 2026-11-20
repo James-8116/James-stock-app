@@ -20,10 +20,23 @@ def get_tw_stock_list():
         if res.get("msg") != "success":
             return {}
         df = pd.DataFrame(res["data"])
-        df = df[df["type"].isin(["twse", "tpex"]) & (df["stock_id"].str.len() == 4) & (df["stock_id"].str.isdigit())]
-        return {r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]} for _, r in df.iterrows()}
+        # 只保留資料日期在最新交易日 7 天內的標的，自動剔除已下市股票
+        latest_date = pd.to_datetime(df["date"]).max()
+        cutoff = (latest_date - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        df = df[
+            df["type"].isin(["twse", "tpex"])
+            & (df["stock_id"].str.len() == 4)
+            & (df["stock_id"].str.isdigit())
+            & (df["date"] >= cutoff)
+        ]
+        return {
+            r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]}
+            for _, r in df.iterrows()
+        }
     except Exception:
         return {}
+
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
