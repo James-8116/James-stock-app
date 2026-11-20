@@ -51,6 +51,15 @@ def calculate_rsi(series, period=14):
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
+
+
+def calculate_kd(df, period=9):
+    low_min = df["Low"].rolling(period).min()
+    high_max = df["High"].rolling(period).max()
+    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
+    k = rsv.ewm(com=2, adjust=False).mean()
+    d = k.ewm(com=2, adjust=False).mean()
+    return k, d
 def get_twii_status():
     try:
         df = yf.download("^TWII", period="18mo", progress=False)
@@ -73,13 +82,13 @@ def get_twii_status():
             "is_bull": curr_c > ma60,
             "fib500": h60 - swing * 0.500,
             "fib618": h60 - swing * 0.618,
-            "ext1272": max(0.0, h60 - swing * 1.272),
+            "stop786": max(0.0, h60 - swing * 0.786),
         }
     except Exception:
         return None
 
 
-def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
+def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.025):
     swing = h60 - l60
     if swing <= 0:
         return None, 0.0, False
@@ -165,14 +174,22 @@ def run_screener(stock_map, is_bull_market=True, is_intraday=False):
                 df = data[t].dropna(subset=["Close", "Volume"])
                 if len(df) < 66:
                     continue
-                close, open_p, low_p = df["Close"], df["Open"], df["Low"]
-                vol_ma5 = (df["Volume"] / 1000).rolling(5).mean().iloc[-1]
+                close, open_p, low_p, vol = df["Close"], df["Open"], df["Low"], df["Volume"]
+                vol_ma5_s = (vol / 1000).rolling(5).mean()
+                vol_ma5, vol_ma5_prev = float(vol_ma5_s.iloc[-1]), float(vol_ma5_s.iloc[-2])
+                curr_v, prev_v = float(vol.iloc[-1]) / 1000, float(vol.iloc[-2]) / 1000
+
                 ma5 = float(close.rolling(5).mean().iloc[-1])
                 ma20 = float(close.rolling(20).mean().iloc[-1])
                 ma60_s = close.rolling(60).mean()
                 ma60, ma60_5d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-6])
+
                 rsi_s = calculate_rsi(close, 14)
                 rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
+                k_s, d_s = calculate_kd(df, 9)
+                k_now, d_now = float(k_s.iloc[-1]), float(d_s.iloc[-1])
+                k_prev, d_prev = float(k_s.iloc[-2]), float(d_s.iloc[-2])
+
                 curr_c, prev_c, curr_o, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(open_p.iloc[-1]), float(low_p.iloc[-1])
                 h20 = float(df["High"].iloc[-20:].max())
                 h60 = float(df["High"].iloc[-60:].max())
@@ -181,41 +198,40 @@ def run_screener(stock_map, is_bull_market=True, is_intraday=False):
                     continue
                 swing = h60 - l60
                 struct_stop = max(ma60, h60 - swing * 0.786)
-                is_rsi_hook = (rsi < 30) and (rsi > prev_rsi)
+                is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
+                is_smart_money = (prev_v < vol_ma5_prev) and (curr_c > curr_o) and (is_intraday or curr_v > prev_v * 1.2)
                 info = stock_map[t]
 
                 if is_bull_market:
                     if curr_c <= ma60 or ma60 <= ma60_5d_ago or ((h20 - curr_c) / h20) * 100 < 3.0:
                         continue
-                    if not (curr_c > curr_o or rsi > prev_rsi):
+                    if not (38 <= rsi <= 52 and is_kd_gold and is_smart_money):
                         continue
                     if (curr_c - struct_stop) / curr_c > 0.065:
                         continue
                     dual_stop = max(struct_stop, curr_c * 0.94)
-                    fib_hit, fib_p, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, 0.015)
-                    if not fib_hit or rsi >= 48:
-                        continue
-                    if is_intraday and not (curr_c <= fib_p * 1.005 and (is_conf or is_rsi_hook)):
+                    fib_hit, fib_p, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, 0.025)
+                    if not fib_hit:
                         continue
                     passed.append({
                         "stock_id": info["id"], "name": info["name"], "close": curr_c,
                         "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi,
                         "fib_hit": fib_hit, "fib_price": fib_p, "is_conf": is_conf,
-                        "is_rsi_hook": is_rsi_hook, "sell1": ma20, "sell2": h20, "dual_stop": dual_stop,
+                        "is_kd_gold": True, "sell1": ma20, "sell2": h20, "dual_stop": dual_stop,
                     })
                 else:
-                    if not (rsi < 28 and rsi > prev_rsi):
+                    if not (rsi < 28 and rsi > prev_rsi and is_kd_gold):
                         continue
                     passed.append({
                         "stock_id": info["id"], "name": info["name"], "close": curr_c,
                         "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi,
                         "fib_hit": "超賣底", "fib_price": curr_c, "is_conf": False,
-                        "is_rsi_hook": True, "sell1": ma5, "sell2": ma20, "dual_stop": curr_l * 0.97,
+                        "is_kd_gold": True, "sell1": ma5, "sell2": ma20, "dual_stop": curr_l * 0.97,
                     })
         except Exception:
             continue
 
-    passed.sort(key=lambda x: (not x["is_conf"], not x["is_rsi_hook"], x["rsi"]))
+    passed.sort(key=lambda x: (not x["is_conf"], x["rsi"]))
     top_picks = passed[:8]
     for item in top_picks:
         item["inst_5d"] = check_inst_buy_5d(item["stock_id"])
@@ -242,7 +258,7 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
     if not picks:
         body_contents.append({
             "type": "box", "layout": "vertical", "paddingAll": "12px", "backgroundColor": "#F5F5F5", "cornerRadius": "8px",
-            "contents": [{"type": "text", "text": "今日無符合嚴格回測條件之標的，建議耐心觀望。", "size": "sm", "color": "#666666", "wrap": True}],
+            "contents": [{"type": "text", "text": "今日無符合主力洗盤出量＋KD金叉之標的，建議耐心觀望。", "size": "sm", "color": "#666666", "wrap": True}],
         })
     else:
         for idx, s in enumerate(picks):
@@ -252,15 +268,14 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
             pct_sign = "+" if s["pct"] >= 0 else ""
             inst_color = "#D32F2F" if s["inst_5d"] > 0 else ("#2E7D32" if s["inst_5d"] < 0 else "#757575")
             inst_sign = "+" if s["inst_5d"] > 0 else ""
-            badges = [b for b, cond in [("🔥均線共振", s["is_conf"]), ("🪝RSI勾頭", s["is_rsi_hook"])] if cond]
-            badge_str = " ".join(badges) if badges else f"Fib {s['fib_hit']}"
+            badge_str = f"🔥共振＋KD金叉" if s["is_conf"] else f"⚡主力出量＋KD金叉"
 
             body_contents.append({
                 "type": "box", "layout": "vertical", "margin": "md" if idx > 0 else "none",
                 "contents": [
                     {"type": "box", "layout": "horizontal", "contents": [
                         {"type": "text", "text": f"{s['stock_id']} {s['name']}", "weight": "bold", "size": "md", "color": "#111111", "flex": 5},
-                        {"type": "text", "text": badge_str, "size": "xs", "weight": "bold", "color": "#E65100", "align": "end", "flex": 4},
+                        {"type": "text", "text": badge_str, "size": "xs", "weight": "bold", "color": "#E65100", "align": "end", "flex": 5},
                     ]},
                     {"type": "box", "layout": "horizontal", "margin": "xs", "contents": [
                         {"type": "text", "text": f"現價 {s['close']:.2f} ({pct_sign}{s['pct']:.1f}%)", "size": "sm", "weight": "bold", "color": pct_color, "flex": 5},
