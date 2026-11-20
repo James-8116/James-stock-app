@@ -115,10 +115,10 @@ with st.sidebar:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股黃金高賣與防守監控", "📉 黃金分割低接全市場掃描"])
+tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割低接全市場掃描"])
 
 with tab1:
-    st.subheader("📋 持股黃金高賣與防守即時監控（輸入代號與成本按 Enter 自動更新）")
+    st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
     rows_out = []
@@ -141,8 +141,12 @@ with tab1:
         h20 = float(df["High"].iloc[-20:].max())
         h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
         swing = h60 - l60
+
         fib_res_618 = l60 + swing * 0.618
         fib_ext_1272 = l60 + swing * 1.272
+        fib_stop_786 = h60 - swing * 0.786
+        dual_stop = max(ma60, fib_stop_786)
+        stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
         pnl = ((curr_c - cost) / cost) * 100
 
         sigs = []
@@ -151,20 +155,19 @@ with tab1:
         elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐達黃金0.618壓力賣點")
         elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
         if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線移動停利")
-        if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
+        if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}({dual_stop:.2f})停損")
 
         rows_out.append({
             "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
             "RSI": f"{rsi:.1f}",
             "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}",
             "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
-            "前高賣點": f"{h20:.2f}",
-            "🛡️ 季線停損": f"{ma60:.2f}",
+            "🛡️ 雙重停損(季線/Fib0.786)": f"{dual_stop:.2f} ({stop_tag})",
             "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
         })
 
     if rows_out:
-                st.table(pd.DataFrame(rows_out).set_index("代號"))
+        st.table(pd.DataFrame(rows_out).set_index("代號"))
 
 with tab2:
     if not FINMIND_TOKEN:
@@ -195,11 +198,13 @@ with tab2:
                 continue
             if req_rebound and not (curr_rsi >= prev_rsi or curr_c > curr_o):
                 continue
+            swing = h60 - l60
+            dual_stop = max(ma60, h60 - swing * 0.786)
             info = stock_map[t]
             passed.append({
                 "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
                 "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict,
-                "ma20": ma20, "ma60": ma60, "high_20d": h20, "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
+                "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20, "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
             })
 
         passed = sorted(passed, key=lambda x: x["rsi"])[:40]
@@ -223,9 +228,9 @@ with tab2:
                 "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"), "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
                 "🟢 第一賣點(月線)": df_res.apply(lambda r: f"{r['ma20']:.1f} ({r['up_ma20']:+.1f}%)", axis=1),
                 "🔴 第二賣點(前高)": df_res.apply(lambda r: f"{r['high_20d']:.1f} (+{r['up_high']:.1f}%)", axis=1),
-                "🛡️ 防守停損(季線)": df_res["ma60"].map(lambda x: f"{x:.1f}"),
+                "🛡️ 雙重停損(季線/Fib0.786)": df_res["dual_stop"].map(lambda x: f"{x:.1f}"),
             })
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            st.table(disp.set_index("代號"))
 
             opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
