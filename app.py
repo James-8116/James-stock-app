@@ -255,8 +255,8 @@ with st.sidebar:
 st.title("📊 台股 AI 波段監控與選股看板")
 
 period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
-sel_period = st.radio("📐 選擇黃金分割波段計算週期（同步連動大盤與個股）：", list(period_map.keys()), index=1, horizontal=True)
-lookback_days = period_map[sel_period]
+sel_twii_period = st.radio("🇹🇼 選擇【大盤】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="twii_period_radio")
+twii_days = period_map[sel_twii_period]
 
 
 @st.fragment(run_every=refresh_sec)
@@ -282,7 +282,7 @@ def render_live_market_panel(days):
             r2_3.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
 
 
-render_live_market_panel(lookback_days)
+render_live_market_panel(twii_days)
 
 if FINMIND_TOKEN:
     buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
@@ -298,7 +298,9 @@ if FINMIND_TOKEN:
 
 tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 黃金分割＋季線共振低接掃描"])
 with tab1:
-    st.subheader(f"📋 個股階梯支撐與雙重防守監控（目前基準：{sel_period}，輸入代號即可查詢，成本選填）")
+    sel_stock_period = st.radio("📈 選擇【個股】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="stock_period_radio")
+    stock_days = period_map[sel_stock_period]
+    st.subheader(f"📋 個股階梯支撐與雙重防守監控（目前基準：{sel_stock_period}，輸入代號即可查詢，成本選填）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
     @st.fragment(run_every=refresh_sec)
@@ -374,8 +376,7 @@ with tab1:
         if rows_out:
             st.table(pd.DataFrame(rows_out).set_index("代號"))
 
-    render_live_holdings(lookback_days)
-
+    render_live_holdings(stock_days)
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
