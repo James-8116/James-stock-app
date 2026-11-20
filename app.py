@@ -68,6 +68,8 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
             is_conf = abs(v - ma60) / ma60 <= 0.025
             return k, v, fibs, is_conf
     return None, 0.0, fibs, False
+
+
 @st.cache_data(ttl=55)
 def get_twii_status(lookback_days=60):
     try:
@@ -130,6 +132,8 @@ def get_tw_stock_list(token):
         }
     except Exception:
         return {}
+
+
 @st.cache_data(ttl=3600)
 def get_top5_institutional(token):
     stock_map = get_tw_stock_list(token)
@@ -230,6 +234,8 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
+
+
 with st.sidebar:
     st.header("⏱️ 盤中即時更新設定")
     auto_refresh = st.toggle("🟢 開啟盤中即時自動更新 (60秒)", value=True)
@@ -361,7 +367,7 @@ with tab1:
                 if curr_c < ma60:
                     sigs.append(f"🛡️空頭排列(季線壓力{ma60:.1f})")
 
-          rows_out.append({
+            rows_out.append({
                 "代號": code,
                 "名稱": auto_name,
                 "現價": f"{curr_c:.2f}",
@@ -378,6 +384,7 @@ with tab1:
             st.table(pd.DataFrame(rows_out).set_index("代號"))
 
     render_live_holdings(stock_days)
+
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
