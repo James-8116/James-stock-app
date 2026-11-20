@@ -57,7 +57,16 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 
-def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
+def calculate_kd(df, period=9):
+    low_min = df["Low"].rolling(period).min()
+    high_max = df["High"].rolling(period).max()
+    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
+    k = rsv.ewm(com=2, adjust=False).mean()
+    d = k.ewm(com=2, adjust=False).mean()
+    return k, d
+
+
+def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.025):
     swing = h60 - l60
     if swing <= 0:
         return None, 0.0, {}, False
@@ -129,6 +138,8 @@ def get_tw_stock_list(token):
         }
     except Exception:
         return {}
+
+
 @st.cache_data(ttl=3600)
 def get_top5_institutional(token):
     stock_map = get_tw_stock_list(token)
@@ -171,8 +182,6 @@ def get_top5_institutional(token):
     if not sell_df.empty:
         sell_df["買賣超(張)"] = sell_df["買賣超(張)"].map(lambda x: f"{x:+,}")
     return buy_df, sell_df, data_date
-
-
 @st.cache_data(ttl=3600)
 def download_all_market_data(tickers):
     all_dfs = {}
@@ -229,32 +238,33 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
+
+
 with st.sidebar:
     st.header("⏱️ 盤中即時更新設定")
     auto_refresh = st.toggle("🟢 開啟盤中即時自動更新 (60秒)", value=True)
     refresh_sec = 60 if auto_refresh else None
     st.divider()
     st.header("⚙️ 全市場選股參數微調")
-    rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
+    rsi_min, rsi_max = st.slider("14日 RSI 強勢回檔區間", 25, 65, (38, 52), 1)
     min_pullback = st.slider("距20日高點至少回檔 (%)", 1, 20, 3, 1)
     min_vol = st.number_input("5日均量下限 (張)", 300, 10000, 1000, 100)
     min_price = st.number_input("最低股價 (元)", 10, 200, 15, 5)
     st.divider()
     req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
     req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
-    fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.0, 1.5, 0.5) / 100
-    req_ma20 = st.checkbox("必須跌破 20 日月線", value=False)
+    fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.5, 2.5, 0.5) / 100
     req_ma60_up = st.checkbox("強制季線斜率向上 (避免頭部下彎)", value=True)
-    req_rebound = st.checkbox("必須當日止跌 (收紅K或RSI勾頭)", value=True)
+    req_kd_gold = st.checkbox("⚡ 強制 9 日 KD 低檔黃金交叉 (K < 45)", value=True)
+    req_smart_vol = st.checkbox("💰 強制主力縮量洗盤後紅K出量攻擊", value=True)
     max_stop_pct = st.slider("最大停損空間上限 (%)", 3.0, 12.0, 6.5, 0.5) / 100
-    req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=True)
+    req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=False)
     top_n = st.slider("顯示精選檔數", 3, 15, 5)
     st.divider()
     if not FINMIND_TOKEN:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
-
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 黃金分割＋季線共振低接掃描"])
+tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 主力洗盤出量＋KD金叉高勝率掃描"])
 
 period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
 sel_twii_period = st.radio("🇹🇼 選擇【大盤】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="twii_period_radio")
@@ -297,6 +307,7 @@ if FINMIND_TOKEN:
             with c_sell:
                 st.markdown("**❄️ 賣超前五名**")
                 st.table(sell_top5.set_index("代號"))
+
 with tab1:
     sel_stock_period = st.radio("📈 選擇【個股】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="stock_period_radio")
     stock_days = period_map[sel_stock_period]
@@ -363,8 +374,7 @@ with tab1:
                     sigs.append(f"🛡️空頭排列(季線壓力{ma60:.1f})")
 
             rows_out.append({
-                "代號": code,
-                "名稱": auto_name,
+                "代號": code, "名稱": auto_name,
                 "現價": f"{curr_c:.2f}",
                 "📐 合理回檔(0.500)": f"{fib_500:.2f}",
                 "📐 深度回檔(0.618)": f"{fib_618:.2f}",
@@ -384,7 +394,7 @@ with tab2:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
         st.stop()
     b1, b2 = st.columns(2)
-    run_scan = b1.button("🚀 開始全市場低接掃描", type="primary", use_container_width=True)
+    run_scan = b1.button("🚀 開始高勝率精品低接掃描", type="primary", use_container_width=True)
     force_refresh = b2.button("🔄 強制重抓盤中最新報價", use_container_width=True)
     if force_refresh:
         download_all_market_data.clear()
@@ -400,42 +410,56 @@ with tab2:
 
         passed = []
         for t, df in market_data.items():
-            close, open_p, low_p = df["Close"], df["Open"], df["Low"]
-            vol_ma5 = (df["Volume"] / 1000).rolling(5).mean().iloc[-1]
-            ma20 = close.rolling(20).mean().iloc[-1]
+            close, open_p, low_p, vol = df["Close"], df["Open"], df["Low"], df["Volume"]
+            vol_ma5_s = (vol / 1000).rolling(5).mean()
+            vol_ma5, vol_ma5_prev = float(vol_ma5_s.iloc[-1]), float(vol_ma5_s.iloc[-2])
+            curr_v, prev_v = float(vol.iloc[-1]) / 1000, float(vol.iloc[-2]) / 1000
+
+            ma20 = float(close.rolling(20).mean().iloc[-1])
             ma60_s = close.rolling(60).mean()
             ma60, ma60_5d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-6])
             rsi = calculate_rsi(close, 14)
+            k_s, d_s = calculate_kd(df, 9)
+            k_now, d_now = float(k_s.iloc[-1]), float(d_s.iloc[-1])
+            k_prev, d_prev = float(k_s.iloc[-2]), float(d_s.iloc[-2])
+
             curr_c, prev_c, curr_o, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(open_p.iloc[-1]), float(low_p.iloc[-1])
-            curr_rsi, prev_rsi = float(rsi.iloc[-1]), float(rsi.iloc[-2])
+            curr_rsi = float(rsi.iloc[-1])
             h20, h60, l60 = float(df["High"].iloc[-20:].max()), float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
 
             if vol_ma5 < min_vol or curr_c < min_price or curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < min_pullback:
                 continue
             if req_ma60_up and ma60 <= ma60_5d_ago:
                 continue
+            if not (rsi_min <= curr_rsi <= rsi_max):
+                continue
+            is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
+            if req_kd_gold and not is_kd_gold:
+                continue
+            is_smart_money = (prev_v < vol_ma5_prev) and (curr_c > curr_o) and (curr_v > prev_v * 1.2)
+            if req_smart_vol and not is_smart_money:
+                continue
+
             swing = h60 - l60
             struct_stop = max(ma60, h60 - swing * 0.786)
             if (curr_c - struct_stop) / curr_c > max_stop_pct:
                 continue
             fib_hit, fib_p, fib_dict, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, fib_tol)
-            if (req_fib and not fib_hit) or (req_conf_only and not is_conf) or (req_ma20 and curr_c >= ma20) or curr_rsi >= rsi_limit:
+            if (req_fib and not fib_hit) or (req_conf_only and not is_conf):
                 continue
-            if req_rebound and not (curr_rsi >= prev_rsi or curr_c > curr_o):
-                continue
+
             dual_stop = max(struct_stop, curr_c * (1 - max_stop_pct))
-            is_rsi_hook = (curr_rsi < 30) and (curr_rsi > prev_rsi)
             info = stock_map[t]
             passed.append({
                 "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
                 "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
-                "is_rsi_hook": is_rsi_hook, "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
+                "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
                 "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100,
             })
 
         passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
         final_list = []
-        with st.spinner(f"技術面 {len(passed)} 檔過關，核對三大法人買賣超中..."):
+        with st.spinner(f"技術與主力條件 {len(passed)} 檔過關，核對三大法人數據中..."):
             for item in passed:
                 net = check_inst_buy_5d(item["stock_id"], FINMIND_TOKEN)
                 if req_inst and net <= 0:
@@ -444,10 +468,10 @@ with tab2:
                 final_list.append(item)
 
         if not final_list:
-            st.info("💡 目前條件無符合標的，請在左側放寬篩選條件。")
+            st.info("💡 目前條件較嚴格（寧缺勿濫），暫無符合標的，可在左側適度放寬開關。")
         else:
-            df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(top_n)
-            format_name = lambda r: f"{r['name']} {'🔥雙支撐' if r['is_conf'] else ''} {'🟢止跌反彈' if r['is_rsi_hook'] else ''}".strip()
+            df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi"], ascending=[False, True]).head(top_n)
+            format_name = lambda r: f"{r['name']} {'🔥雙支撐' if r['is_conf'] else '⚡主力金叉'}".strip()
             format_buy = lambda r: f"{r['fib_price']*0.99:.1f}~{r['fib_price']:.1f} ({'✅已到買區' if r['close'] <= r['fib_price']*1.005 else '⏳等拉回'})"
 
             disp = pd.DataFrame({
