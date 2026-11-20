@@ -37,25 +37,30 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     return None, 0.0, fibs, False
 
 @st.cache_data(ttl=600)
-def get_twii_status():
+def get_twii_status(lookback_days=60):
+    """取得台灣加權指數 (^TWII) 多空狀態與可調週期黃金分割點位（支援 1.5 年資料算年線）"""
     try:
-        df = yf.download("^TWII", period="4mo", progress=False)
+        df = yf.download("^TWII", period="18mo", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if df.empty or len(df) < 60:
             return None
         close = df["Close"]
         curr_c, prev_c = float(close.iloc[-1]), float(close.iloc[-2])
-        ma20 = float(close.rolling(20).mean().iloc[-1])
         ma60 = float(close.rolling(60).mean().iloc[-1])
+        ma240 = float(close.rolling(240).mean().iloc[-1]) if len(close) >= 240 else float(close.mean())
         rsi_s = calculate_rsi(close, 14)
         rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
-        h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
-        swing = h60 - l60
+        sub = df.iloc[-lookback_days:]
+        h_val, l_val = float(sub["High"].max()), float(sub["Low"].min())
+        swing = h_val - l_val
         return {
             "close": curr_c, "diff": curr_c - prev_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
-            "ma20": ma20, "ma60": ma60, "rsi": rsi, "prev_rsi": prev_rsi,
-            "fib382": h60 - swing * 0.382, "fib500": h60 - swing * 0.500, "fib618": h60 - swing * 0.618
+            "ma60": ma60, "ma240": ma240, "rsi": rsi, "prev_rsi": prev_rsi,
+            "fib382": h_val - swing * 0.382,
+            "fib500": h_val - swing * 0.500,
+            "fib618": h_val - swing * 0.618,
+            "fib_ext1272": max(0.0, h_val - swing * 1.272)
         }
     except Exception:
         return None
@@ -199,19 +204,24 @@ with st.sidebar:
 
 st.title("📊 台股 AI 波段監控與選股看板")
 
-twii = get_twii_status()
+# 可調整週期的大盤多空溫度計（支援 60日一季 / 120日半年 / 240日一年）
+period_map = {"60日 (一季波段)": 60, "120日 (半年波段)": 120, "240日 (一年長線大底)": 240}
+sel_period = st.radio("🇹🇼 選擇大盤黃金分割計算週期：", list(period_map.keys()), horizontal=True)
+twii = get_twii_status(period_map[sel_period])
+
 if twii:
     is_bull = twii["close"] > twii["ma60"]
     market_mood = "🟢 季線之上（偏多操作，可正常低接）" if is_bull else "🚨 跌破季線（空頭修正，縮小試單）"
     if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
         market_mood += " ｜ 🟢大盤超賣止跌勾頭"
     with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
         m2.metric("🛡️ 60日季線防線", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
-        m3.metric("📐 黃金 0.382 支撐", f"{twii['fib382']:,.0f}")
+        m3.metric("🏛️ 240日年線大底", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
         m4.metric("📐 黃金 0.500 支撐", f"{twii['fib500']:,.0f}")
         m5.metric("📐 黃金 0.618 支撐", f"{twii['fib618']:,.0f}")
+        m6.metric("⚠️ 極端延伸 1.272", f"{twii['fib_ext1272']:,.0f}")
 
 if FINMIND_TOKEN:
     buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
