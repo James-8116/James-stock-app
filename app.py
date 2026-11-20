@@ -11,6 +11,7 @@ st.set_page_config(page_title="台股 AI 波段監控與選股", page_icon="📊
 
 FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", ""))
 FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
+TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
 
 DEFAULT_HOLDINGS = [
     {"代號": "2891", "買進成本": 71.4},
@@ -59,6 +60,48 @@ def get_tw_stock_list(token):
         return {}
 
 @st.cache_data(ttl=3600)
+def get_top5_institutional(token):
+    stock_map = get_tw_stock_list(token)
+    id_to_name = {v["id"]: v["name"] for v in stock_map.values()}
+    if not id_to_name:
+        return pd.DataFrame(), pd.DataFrame(), ""
+    net_dict, data_date = {}, ""
+    for days_back in range(0, 5):
+        q_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        try:
+            res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "start_date": q_date, "end_date": q_date, "token": token}, timeout=15).json()
+            if res.get("msg") == "success" and res.get("data"):
+                df = pd.DataFrame(res["data"])
+                df = df[df["stock_id"].isin(id_to_name.keys())]
+                if not df.empty:
+                    df["net_lots"] = (df["buy"] - df["sell"]) / 1000
+                    net_dict = df.groupby("stock_id")["net_lots"].sum().to_dict()
+                    data_date = q_date
+                    break
+        except Exception:
+            pass
+    if not net_dict:
+        try:
+            rows = requests.get(TWSE_T86_URL, timeout=15).json()
+            for r in rows:
+                sid = str(r.get("Code", "")).strip()
+                if sid in id_to_name:
+                    val = str(r.get("TotalInstitutionalInvestorsNetBuySell", "0")).replace(",", "")
+                    net_dict[sid] = float(val) / 1000
+            data_date = "最新交易日"
+        except Exception:
+            pass
+    if not net_dict:
+        return pd.DataFrame(), pd.DataFrame(), ""
+    items = [{"代號": k, "名稱": id_to_name[k], "買賣超(張)": int(round(v))} for k, v in net_dict.items()]
+    buy_df = pd.DataFrame(sorted([x for x in items if x["買賣超(張)"] > 0], key=lambda x: x["買賣超(張)"], reverse=True)[:5])
+    sell_df = pd.DataFrame(sorted([x for x in items if x["買賣超(張)"] < 0], key=lambda x: x["買賣超(張)"])[:5])
+    if not buy_df.empty:
+        buy_df["買賣超(張)"] = buy_df["買賣超(張)"].map(lambda x: f"{x:+,}")
+    if not sell_df.empty:
+        sell_df["買賣超(張)"] = sell_df["買賣超(張)"].map(lambda x: f"{x:+,}")
+    return buy_df, sell_df, data_date
+@st.cache_data(ttl=3600)
 def download_all_market_data(tickers):
     all_dfs = {}
     batch_size = 250
@@ -79,6 +122,7 @@ def download_all_market_data(tickers):
         time.sleep(0.5)
     bar.empty()
     return all_dfs
+
 def check_inst_buy_5d(stock_id, token):
     start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
     params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": stock_id, "start_date": start, "token": token}
@@ -131,8 +175,20 @@ with st.sidebar:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
 
+if FINMIND_TOKEN:
+    buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
+    if not buy_top5.empty or not sell_top5.empty:
+        with st.expander(f"🏦 三大法人合計買賣超 TOP 5（資料日期：{inst_date}）", expanded=True):
+            c_buy, c_sell = st.columns(2)
+            with c_buy:
+                st.markdown("**🔥 買超前五名**")
+                st.table(buy_top5.set_index("代號"))
+            with c_sell:
+                st.markdown("**❄️ 賣超前五名**")
+                st.table(sell_top5.set_index("代號"))
+
+tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
 with tab1:
     st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
@@ -189,6 +245,7 @@ with tab1:
 
     if rows_out:
         st.table(pd.DataFrame(rows_out).set_index("代號"))
+
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
