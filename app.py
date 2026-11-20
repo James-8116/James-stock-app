@@ -163,20 +163,20 @@ with tab1:
         fib_ext_1272 = l60 + swing * 1.272
         fib_stop_786 = h60 - swing * 0.786
         dual_stop = max(ma60, fib_stop_786)
-        stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
+        stop_tag = "季線" if ma60 >= fib_stop_786 else "黃金0.786"
         pnl = ((curr_c - cost) / cost) * 100
 
         sigs = []
         if rsi < 30 and rsi > prev_rsi:
-            sigs.append(f"🟢RSI<30超賣勾頭(反彈看5日線{ma5:.2f})")
+            sigs.append(f"🟢止跌反彈訊號(可試單/目標5日線{ma5:.2f})")
         elif rsi < 30:
-            sigs.append("⏳RSI<30超賣(等勾頭)")
-        if rsi >= 75: sigs.append("🔥RSI過熱高賣")
-        if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金1.272延伸目標")
-        elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐達黃金0.618壓力賣點")
-        elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
-        if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線移動停利")
-        if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}({dual_stop:.2f})停損")
+            sigs.append("⏳還在跌先觀望(別急著接)")
+        if rsi >= 75: sigs.append("🔥漲多過熱(建議分批高賣)")
+        if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金延伸目標(建議高賣)")
+        elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐碰黃金壓力位(適合高賣)")
+        elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯漲回前波高點(適合高賣)")
+        if pnl >= 3.0 and curr_c < ma5: sigs.append("📉跌破5日線(先鎖住獲利)")
+        if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨跌破{stop_tag}{dual_stop:.2f}(建議停損)")
 
         rows_out.append({
             "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
@@ -184,7 +184,7 @@ with tab1:
             "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}",
             "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
             "🛡️ 雙重停損(季線/Fib0.786)": f"{dual_stop:.2f} ({stop_tag})",
-            "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
+            "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察"
         })
 
     if rows_out:
@@ -246,7 +246,7 @@ with tab2:
             def format_name(r):
                 tags = []
                 if r["is_conf"]: tags.append("🔥雙支撐")
-                if r["is_rsi_hook"]: tags.append("🟢超賣勾頭")
+                if r["is_rsi_hook"]: tags.append("🟢止跌反彈")
                 return f"{r['name']} {' '.join(tags)}".strip()
 
             disp = pd.DataFrame({
@@ -293,3 +293,4 @@ with tab2:
             )
 
             st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
+
