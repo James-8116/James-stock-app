@@ -249,7 +249,8 @@ with tab2:
                 y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
                 color=alt.Color("指標:N", scale=alt.Scale(
                     domain=["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"],
-                    range=["#FF4B4B", "#FFA500", "#00CC96", "#636EFA", "#AB63FA", "#19D3F3"]
+                    range=["#E60000", "#FF8C00", "#008000", "#6B4C35", "#0055FF", "#D0006F"]
+
                 ))
             )
 
