@@ -164,7 +164,7 @@ with tab1:
         })
 
     if rows_out:
-        st.dataframe(pd.DataFrame(rows_out), use_container_width=True, hide_index=True)
+                st.table(pd.DataFrame(rows_out).set_index("代號"))
 
 with tab2:
     if not FINMIND_TOKEN:
