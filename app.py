@@ -36,6 +36,31 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
             return k, v, fibs, is_conf
     return None, 0.0, fibs, False
 
+@st.cache_data(ttl=600)
+def get_twii_status():
+    """取得台灣加權指數 (^TWII) 多空狀態與黃金分割點位"""
+    try:
+        df = yf.download("^TWII", period="4mo", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df.empty or len(df) < 60:
+            return None
+        close = df["Close"]
+        curr_c, prev_c = float(close.iloc[-1]), float(close.iloc[-2])
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma60 = float(close.rolling(60).mean().iloc[-1])
+        rsi_s = calculate_rsi(close, 14)
+        rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
+        h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
+        swing = h60 - l60
+        return {
+            "close": curr_c, "diff": curr_c - prev_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
+            "ma20": ma20, "ma60": ma60, "rsi": rsi, "prev_rsi": prev_rsi,
+            "fib382": h60 - swing * 0.382, "fib500": h60 - swing * 0.500, "fib618": h60 - swing * 0.618
+        }
+    except Exception:
+        return None
+
 @st.cache_data(ttl=86400)
 def get_all_tw_names(token):
     try:
@@ -58,7 +83,6 @@ def get_tw_stock_list(token):
         return {r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]} for _, r in df.iterrows()}
     except Exception:
         return {}
-
 @st.cache_data(ttl=3600)
 def get_top5_institutional(token):
     stock_map = get_tw_stock_list(token)
@@ -101,6 +125,7 @@ def get_top5_institutional(token):
     if not sell_df.empty:
         sell_df["買賣超(張)"] = sell_df["買賣超(張)"].map(lambda x: f"{x:+,}")
     return buy_df, sell_df, data_date
+
 @st.cache_data(ttl=3600)
 def download_all_market_data(tickers):
     all_dfs = {}
@@ -155,40 +180,6 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
-
-with st.sidebar:
-    st.header("⚙️ 全市場選股參數微調")
-    rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
-    min_pullback = st.slider("距20日高點至少回檔 (%)", 1, 20, 3, 1)
-    min_vol = st.number_input("5日均量下限 (張)", 300, 10000, 1000, 100)
-    min_price = st.number_input("最低股價 (元)", 10, 200, 15, 5)
-    st.divider()
-    req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
-    req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
-    fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.0, 1.5, 0.5) / 100
-    req_ma20 = st.checkbox("必須跌破 20 日月線", value=False)
-    req_rebound = st.checkbox("必須當日止跌 (收紅K或RSI勾頭)", value=False)
-    req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=True)
-    top_n = st.slider("顯示精選檔數", 3, 15, 5)
-    st.divider()
-    if not FINMIND_TOKEN:
-        FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
-
-st.title("📊 台股 AI 波段監控與選股看板")
-
-if FINMIND_TOKEN:
-    buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
-    if not buy_top5.empty or not sell_top5.empty:
-        with st.expander(f"🏦 三大法人合計買賣超 TOP 5（資料日期：{inst_date}）", expanded=True):
-            c_buy, c_sell = st.columns(2)
-            with c_buy:
-                st.markdown("**🔥 買超前五名**")
-                st.table(buy_top5.set_index("代號"))
-            with c_sell:
-                st.markdown("**❄️ 賣超前五名**")
-                st.table(sell_top5.set_index("代號"))
-
-tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
 with tab1:
     st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
@@ -245,7 +236,6 @@ with tab1:
 
     if rows_out:
         st.table(pd.DataFrame(rows_out).set_index("代號"))
-
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
