@@ -254,6 +254,7 @@ with st.sidebar:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 
 st.title("📊 台股 AI 波段監控與選股看板")
+tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 黃金分割＋季線共振低接掃描"])
 
 period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
 sel_twii_period = st.radio("🇹🇼 選擇【大盤】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="twii_period_radio")
@@ -296,8 +297,6 @@ if FINMIND_TOKEN:
             with c_sell:
                 st.markdown("**❄️ 賣超前五名**")
                 st.table(sell_top5.set_index("代號"))
-
-tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 黃金分割＋季線共振低接掃描"])
 with tab1:
     sel_stock_period = st.radio("📈 選擇【個股】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="stock_period_radio")
     stock_days = period_map[sel_stock_period]
