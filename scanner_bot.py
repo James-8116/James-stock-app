@@ -42,7 +42,6 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     for k, ratio in [("0.382", 0.382), ("0.500", 0.500), ("0.618", 0.618)]:
         v = h60 - swing * ratio
         if abs(curr_c - v) / v <= tol or abs(curr_l - v) / v <= tol:
-            # 判斷該黃金分割位是否與 60 日季線重疊（價差 <= 2.5%）形成雙重支撐共振
             is_confluence = abs(v - ma60) / ma60 <= 0.025
             return k, v, is_confluence
     return None, 0.0, False
@@ -78,7 +77,8 @@ def monitor_holdings(stock_map):
             close = df["Close"]
             curr_c = float(close.iloc[-1])
             ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
-            rsi = float(calculate_rsi(close, 14).iloc[-1])
+            rsi_s = calculate_rsi(close, 14)
+            rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
             h20 = float(df["High"].iloc[-20:].max())
             h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
             swing = h60 - l60
@@ -91,6 +91,10 @@ def monitor_holdings(stock_map):
             pnl = ((curr_c - cost) / cost) * 100
 
             sigs = []
+            if rsi < 30 and rsi > prev_rsi:
+                sigs.append(f"🟢RSI<30超賣勾頭(看5日線{ma5:.1f})")
+            elif rsi < 30:
+                sigs.append("⏳RSI<30超賣(等勾頭)")
             if rsi >= 75: sigs.append("🔥RSI過熱高賣")
             if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append(f"🚀達黃金1.272({fib_ext_1272:.1f})")
             elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐達黃金0.618({fib_res_618:.1f})")
@@ -121,7 +125,8 @@ def run_screener(stock_map):
                 close, low_p = df["Close"], df["Low"]
                 vol_ma5 = (df["Volume"] / 1000).rolling(5).mean().iloc[-1]
                 ma20, ma60 = close.rolling(20).mean().iloc[-1], close.rolling(60).mean().iloc[-1]
-                rsi = float(calculate_rsi(close, 14).iloc[-1])
+                rsi_s = calculate_rsi(close, 14)
+                rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
                 curr_c, prev_c, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(low_p.iloc[-1])
                 h20, h60, l60 = float(df["High"].iloc[-20:].max()), float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
                 if vol_ma5 < 1000 or curr_c < 15 or curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < 3.0:
@@ -131,17 +136,17 @@ def run_screener(stock_map):
                     continue
                 swing = h60 - l60
                 dual_stop = max(ma60, h60 - swing * 0.786)
+                is_rsi_hook = (rsi < 30) and (rsi > prev_rsi)
                 info = stock_map[t]
                 passed.append({
                     "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
-                    "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "is_conf": is_conf,
+                    "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "is_conf": is_conf, "is_rsi_hook": is_rsi_hook,
                     "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20
                 })
         except Exception:
             pass
         time.sleep(0.5)
 
-    # 優先挑選「雙支撐共振 (is_conf=True)」且 RSI 最低的標的
     passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
     final_list = []
     for item in passed:
@@ -190,10 +195,10 @@ def build_flex_message(today_str, holdings, top5):
         body.append({"type": "separator", "margin": "xs"})
         for s in top5:
             c = "#D32F2F" if s["pct"] >= 0 else "#2E7D32"
-            conf_tag = "🔥共振" if s["is_conf"] else ""
+            tags = ("🔥共振" if s["is_conf"] else "") + ("🟢勾頭" if s["is_rsi_hook"] else "")
             body.append({"type": "box", "layout": "horizontal", "margin": "sm", "alignItems": "center", "contents": [
                 {"type": "box", "layout": "vertical", "flex": 3, "contents": [
-                    {"type": "text", "text": f"{s['name']}{conf_tag}", "size": "xs", "weight": "bold"},
+                    {"type": "text", "text": f"{s['name']}{tags}", "size": "xs", "weight": "bold"},
                     {"type": "text", "text": f"{s['stock_id']}(+{s['net_5d']}張)", "size": "xxs", "color": "#666666"}
                 ]},
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
@@ -213,7 +218,7 @@ def build_flex_message(today_str, holdings, top5):
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
                 {"type": "text", "text": "📊 台股 AI 波段監控與選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割＋季線雙支撐共振", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋超賣止跌監控", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
