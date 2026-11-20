@@ -4,7 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+# 對齊你原本設定的環境變數名稱
+LINE_TOKEN = os.environ.get("LINE_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
@@ -28,14 +29,12 @@ def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    # 使用 Wilder's Smoothing (與看盤軟體一致)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def run_screener():
-    # 抓取過去 110 天的資料，確保足夠計算 60 日均線 (季線)
     start_date = (datetime.now() - timedelta(days=110)).strftime("%Y-%m-%d")
     inst_start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
@@ -43,7 +42,6 @@ def run_screener():
     info_df = fetch_finmind("TaiwanStockInfo", start_date)
     if info_df.empty:
         return []
-    # 只保留上市 (twse) 與上櫃 (tpex) 一般股票，排除 ETF/權證/特別股
     info_df = info_df[info_df["type"].isin(["twse", "tpex"])]
     info_df = info_df[info_df["stock_id"].str.len() == 4]
     stock_names = dict(zip(info_df["stock_id"], info_df["stock_name"]))
@@ -62,12 +60,11 @@ def run_screener():
     if not inst_df.empty:
         inst_df = inst_df[inst_df["stock_id"].isin(valid_ids)].copy()
         inst_df["net"] = inst_df["buy"] - inst_df["sell"]
-        # 取最近 5 個交易日的法人合計淨買超 (張)
         recent_dates = sorted(inst_df["date"].unique())[-5:]
         inst_recent = inst_df[inst_df["date"].isin(recent_dates)]
         inst_net_5d = (inst_recent.groupby("stock_id")["net"].sum() / 1000).to_dict()
 
-    print("4. 計算全市場技術指標...")
+    print("4. 計算全市場技術指標（下跌找買點、上漲找賣點）...")
     candidates = []
 
     for stock_id, group in price_df.groupby("stock_id"):
@@ -76,7 +73,7 @@ def run_screener():
 
         close = group["close"]
         open_p = group["open"]
-        volume = group["Trading_Volume"] / 1000  # 換算為「張」
+        volume = group["Trading_Volume"] / 1000
 
         ma20 = close.rolling(20).mean()
         ma60 = close.rolling(60).mean()
@@ -93,26 +90,24 @@ def run_screener():
         prev_rsi = rsi14.iloc[-2]
         high_20d = group["max"].iloc[-20:].max()
 
-        # --- 核心篩選條件（下跌找買點） ---
-        # 1. 流動性濾網：5日均量 > 1000 張，股價 > 15 元 (避開殭屍股與雞蛋水餃股)
+        # 1. 流動性濾網：5日均量 > 1000 張，股價 > 15 元
         if curr_vol_ma5 < 1000 or curr_close < 15:
             continue
-        # 2. 長線保護短線：收盤價仍在 60日季線之上 (多頭回檔，非空頭破底)
+        # 2. 長線保護短線：收盤價在 60日季線之上（多頭回檔，非空頭破底）
         if curr_close <= curr_ma60:
             continue
-        # 3. 股價跌破月線 (MA20)，代表短線確實有拉回
+        # 3. 股價跌破月線 (MA20)，代表短線確實有拉回找買點
         if curr_close >= curr_ma20:
             continue
-        # 4. 超賣訊號：14日 RSI < 40，且今日 RSI 止跌勾頭 (今日RSI >= 昨日RSI) 或今日收紅K
+        # 4. 超賣止跌訊號：14日 RSI < 40，且今日 RSI 勾頭或收紅K
         is_rebounding = (curr_rsi >= prev_rsi) or (curr_close > curr_open)
         if not (curr_rsi < 40 and is_rebounding):
             continue
-        # 5. 籌碼濾網：近 5 日三大法人合計買超 > 0 張 (有人趁跌低接)
+        # 5. 籌碼濾網：近 5 日三大法人合計買超 > 0 張
         net_5d = inst_net_5d.get(stock_id, 0)
         if net_5d <= 0:
             continue
 
-        # 計算上漲找賣點的參考空間 (以月線 MA20 與近20日高點作為第一、第二停利目標)
         upside_to_ma20 = ((curr_ma20 - curr_close) / curr_close) * 100
         upside_to_high = ((high_20d - curr_close) / curr_close) * 100
         pct_change = ((curr_close - prev_close) / prev_close) * 100
@@ -131,11 +126,11 @@ def run_screener():
             "net_5d": net_5d
         })
 
-    # 排序邏輯：優先挑選「RSI 越低（越超賣）」的標的，若相近則看法人買超力度
     df_res = pd.DataFrame(candidates)
     if df_res.empty:
         return []
 
+    # 依「RSI 最低（最超賣）」與「法人買超最多」排序，精選前 5 檔
     df_res = df_res.sort_values(by=["rsi", "net_5d"], ascending=[True, False]).head(5)
     return df_res.to_dict("records")
 
@@ -160,7 +155,7 @@ if __name__ == "__main__":
         msg = (
             f"📉 【台股逆勢波段選股】{today_str}\n"
             f"策略：季線上回檔 + RSI超賣止跌 + 法人低接\n\n"
-            f"今日全市場無同時符合「技術超賣」與「法人買超」之標的（可能處於大盤單邊急漲或全面破底期）。"
+            f"今日全市場無同時符合「技術超賣」與「法人買超」之標的。"
         )
     else:
         lines = [
