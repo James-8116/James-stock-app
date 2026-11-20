@@ -1,103 +1,181 @@
 import os
 import requests
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 
-LINE_TOKEN = os.getenv("LINE_TOKEN", "").strip()
-LINE_USER_ID = os.getenv("LINE_USER_ID", "").strip()
-APP_URL = "https://" + "james-stockapp" + ".streamlit.app/"
+LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID = os.environ.get("LINE_USER_ID")
+FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
-WATCH_POOL = {
-    "2330.TW": "2330 台積電", "2317.TW": "2317 鴻海", "2454.TW": "2454 聯發科", "2308.TW": "2308 台達電", "2382.TW": "2382 廣達",
-    "3231.TW": "3231 緯創", "6669.TW": "6669 緯穎", "2303.TW": "2303 聯電", "3711.TW": "3711 日月光", "2357.TW": "2357 華碩",
-    "3008.TW": "3008 大立光", "3019.TW": "3019 亞光", "2340.TW": "2340 台亞", "3450.TW": "3450 聯鈞", "6442.TW": "6442 光聖",
-    "2379.TW": "2379 瑞昱", "3034.TW": "3034 聯詠", "2327.TW": "2327 國巨", "2376.TW": "2376 技嘉", "2301.TW": "2301 光寶科",
-    "2603.TW": "2603 長榮", "2609.TW": "2609 陽明", "2615.TW": "2615 萬海", "2618.TW": "2618 長榮航", "2610.TW": "2610 華航",
-    "2881.TW": "2881 富邦金", "2882.TW": "2882 國泰金", "2891.TW": "2891 中信金", "2886.TW": "2886 兆豐金", "2884.TW": "2884 玉山金",
-    "2885.TW": "2885 元大金", "2890.TW": "2890 永豐金", "2002.TW": "2002 中鋼", "1101.TW": "1101 台泥", "1301.TW": "1301 台塑",
-    "1303.TW": "1303 南亞", "1513.TW": "1513 中興電", "1519.TW": "1519 華城", "1503.TW": "1503 士電", "1504.TW": "1504 東元",
-    "2356.TW": "2356 英業達", "2353.TW": "2353 宏碁", "2324.TW": "2324 仁寶", "4938.TW": "4938 和碩", "2383.TW": "2383 台光電",
-    "3037.TW": "3037 欣興", "3189.TW": "3189 景碩", "8046.TW": "8046 南電", "2368.TW": "2368 金像電", "6213.TW": "6213 聯茂",
-    "3653.TW": "3653 健策", "3017.TW": "3017 奇鋐", "2421.TW": "2421 建準", "3376.TW": "3376 新日興", "6805.TW": "6805 富世達",
-    "3533.TW": "3533 嘉澤", "2345.TW": "2345 智邦", "2313.TW": "2313 華通", "2367.TW": "2367 燿華", "2449.TW": "2449 京元電",
-    "3443.TW": "3443 創意", "3661.TW": "3661 世芯KY", "3035.TW": "3035 智原", "2388.TW": "2388 威盛", "2408.TW": "2408 南亞科",
-    "2344.TW": "2344 華邦電", "2337.TW": "2337 旺宏", "3702.TW": "3702 大聯大", "3036.TW": "3036 文曄", "2395.TW": "2395 研華",
-    "2049.TW": "2049 上銀", "1590.TW": "1590 亞德客", "2207.TW": "2207 和泰車", "2912.TW": "2912 統一超", "1216.TW": "1216 統一",
-    "9910.TW": "9910 豐泰", "3324.TWO": "3324 雙鴻", "4908.TWO": "4908 前鼎", "3081.TWO": "3081 聯亞", "3363.TWO": "3363 上詮",
-    "3163.TWO": "3163 波若威", "4979.TWO": "4979 華星光", "8069.TWO": "8069 元太", "8299.TWO": "8299 群聯", "6488.TWO": "6488 環球晶",
-    "5483.TWO": "5483 中美晶", "5347.TWO": "5347 世界", "3529.TWO": "3529 力旺", "5274.TWO": "5274 信驊", "6147.TWO": "6147 頎邦",
-    "3260.TWO": "3260 威剛", "8086.TWO": "8086 宏捷科", "3105.TWO": "3105 穩懋", "6274.TWO": "6274 台燿", "5425.TWO": "5425 台半",
-    "6182.TWO": "6182 合晶", "3293.TWO": "3293 鈊象", "6472.TWO": "6472 保瑞", "1795.TWO": "1795 美時", "4147.TWO": "4147 中裕"
-}
+FINMIND_URL = "https://finmindtrade.com"
 
-def send_line(msg):
-    if not LINE_TOKEN or not LINE_USER_ID: return
-    push_url = "https://" + "api.line.me" + "/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    res = requests.post(push_url, headers=headers, json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": msg}]}, timeout=15)
-    print("✅ LINE 推播成功！" if res.status_code == 200 else f"❌ 推播失敗：{res.text}")
+def fetch_finmind(dataset, start_date, data_id=None):
+    params = {
+        "dataset": dataset,
+        "start_date": start_date,
+        "token": FINMIND_TOKEN
+    }
+    if data_id:
+        params["data_id"] = data_id
+    res = requests.get(FINMIND_URL, params=params).json()
+    if res.get("msg") != "success":
+        print(f"FinMind Error ({dataset}):", res.get("msg"))
+        return pd.DataFrame()
+    return pd.DataFrame(res["data"])
 
-def scan_market(roll_win=35):
-    trends, dips = [], []
-    for t, title in WATCH_POOL.items():
-        try:
-            df = yf.download(t, period="4mo", progress=False)
-            if df.empty or len(df) < 60: continue
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
-            curr = float(df["Close"].iat[-1])
-            sub = df.tail(roll_win)
-            hi, lo = float(sub["High"].max()), float(sub["Low"].min())
-            diff = hi - lo
-            if diff <= 0: continue
-            f382, f500, f618 = hi - diff * 0.382, hi - diff * 0.500, hi - diff * 0.618
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    # 使用 Wilder's Smoothing (與看盤軟體一致)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-            tr = np.max(pd.concat([df["High"] - df["Low"], np.abs(df["High"] - df["Close"].shift()), np.abs(df["Low"] - df["Close"].shift())], axis=1), axis=1)
-            atr = float(tr.rolling(14).mean().iat[-1])
-            ma20, ma60 = float(df["Close"].rolling(20).mean().iat[-1]), float(df["Close"].rolling(60).mean().iat[-1])
+def run_screener():
+    # 抓取過去 110 天的資料，確保足夠計算 60 日均線 (季線)
+    start_date = (datetime.now() - timedelta(days=110)).strftime("%Y-%m-%d")
+    inst_start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
-            if curr >= ma60 and ma20 >= ma60:
-                anchor = max(f382, ma20)
-                b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), anchor - min(0.25 * atr, anchor * 0.015)
-                # 嚴格確保現價未跌破支撐下緣，且距離買進區間在 8% 內
-                if curr >= b_lo * 0.995 and (curr - b_hi) / b_hi <= 0.08:
-                    sl = min(f500, ma60) - 0.3 * atr
-                    tp1, tp2 = hi, hi + diff * 0.272
-                    avg_b = (b_hi + b_lo) / 2
-                    rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
-                    dist_pct = abs(curr - anchor) / anchor
-                    trends.append({"title": title, "price": curr, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": rr, "dist": dist_pct})
-            else:
-                anchor = f618
-                b_hi, b_lo = anchor + min(0.15 * atr, anchor * 0.005), max(lo, anchor - min(0.25 * atr, anchor * 0.015))
-                # 嚴格確保現價穩守支撐之上，且距離買進區間在 10% 內
-                if curr >= b_lo * 0.995 and (curr - b_hi) / b_hi <= 0.10:
-                    sl = lo - 0.5 * atr
-                    tp1, tp2 = min(ma20, f500), f382
-                    if tp1 > tp2: tp1, tp2 = tp2, tp1
-                    avg_b = (b_hi + b_lo) / 2
-                    rr = (tp2 - avg_b) / (avg_b - sl) if avg_b > sl else 1.0
-                    dist_pct = abs(curr - anchor) / anchor
-                    dips.append({"title": title, "price": curr, "b_lo": b_lo, "b_hi": b_hi, "sl": sl, "tp1": tp1, "tp2": tp2, "rr": rr, "dist": dist_pct})
-        except Exception:
+    print("1. 取得台股基本資料...")
+    info_df = fetch_finmind("TaiwanStockInfo", start_date)
+    if info_df.empty:
+        return []
+    # 只保留上市 (twse) 與上櫃 (tpex) 一般股票，排除 ETF/權證/特別股
+    info_df = info_df[info_df["type"].isin(["twse", "tpex"])]
+    info_df = info_df[info_df["stock_id"].str.len() == 4]
+    stock_names = dict(zip(info_df["stock_id"], info_df["stock_name"]))
+    valid_ids = set(stock_names.keys())
+
+    print("2. 取得全市場歷史價量...")
+    price_df = fetch_finmind("TaiwanStockPrice", start_date)
+    if price_df.empty:
+        return []
+    price_df = price_df[price_df["stock_id"].isin(valid_ids)].copy()
+    price_df = price_df.sort_values(["stock_id", "date"])
+
+    print("3. 取得近5日三大法人買賣超...")
+    inst_df = fetch_finmind("TaiwanStockInstitutionalInvestorsBuySell", inst_start_date)
+    inst_net_5d = {}
+    if not inst_df.empty:
+        inst_df = inst_df[inst_df["stock_id"].isin(valid_ids)].copy()
+        inst_df["net"] = inst_df["buy"] - inst_df["sell"]
+        # 取最近 5 個交易日的法人合計淨買超 (張)
+        recent_dates = sorted(inst_df["date"].unique())[-5:]
+        inst_recent = inst_df[inst_df["date"].isin(recent_dates)]
+        inst_net_5d = (inst_recent.groupby("stock_id")["net"].sum() / 1000).to_dict()
+
+    print("4. 計算全市場技術指標...")
+    candidates = []
+
+    for stock_id, group in price_df.groupby("stock_id"):
+        if len(group) < 62:
             continue
 
-    trends.sort(key=lambda x: (-round(x["rr"], 1), x["dist"]))
-    dips.sort(key=lambda x: (-round(x["rr"], 1), x["dist"]))
-    return trends[:5], dips[:5]
+        close = group["close"]
+        open_p = group["open"]
+        volume = group["Trading_Volume"] / 1000  # 換算為「張」
+
+        ma20 = close.rolling(20).mean()
+        ma60 = close.rolling(60).mean()
+        vol_ma5 = volume.rolling(5).mean()
+        rsi14 = calculate_rsi(close, 14)
+
+        curr_close = close.iloc[-1]
+        prev_close = close.iloc[-2]
+        curr_open = open_p.iloc[-1]
+        curr_ma20 = ma20.iloc[-1]
+        curr_ma60 = ma60.iloc[-1]
+        curr_vol_ma5 = vol_ma5.iloc[-1]
+        curr_rsi = rsi14.iloc[-1]
+        prev_rsi = rsi14.iloc[-2]
+        high_20d = group["max"].iloc[-20:].max()
+
+        # --- 核心篩選條件（下跌找買點） ---
+        # 1. 流動性濾網：5日均量 > 1000 張，股價 > 15 元 (避開殭屍股與雞蛋水餃股)
+        if curr_vol_ma5 < 1000 or curr_close < 15:
+            continue
+        # 2. 長線保護短線：收盤價仍在 60日季線之上 (多頭回檔，非空頭破底)
+        if curr_close <= curr_ma60:
+            continue
+        # 3. 股價跌破月線 (MA20)，代表短線確實有拉回
+        if curr_close >= curr_ma20:
+            continue
+        # 4. 超賣訊號：14日 RSI < 40，且今日 RSI 止跌勾頭 (今日RSI >= 昨日RSI) 或今日收紅K
+        is_rebounding = (curr_rsi >= prev_rsi) or (curr_close > curr_open)
+        if not (curr_rsi < 40 and is_rebounding):
+            continue
+        # 5. 籌碼濾網：近 5 日三大法人合計買超 > 0 張 (有人趁跌低接)
+        net_5d = inst_net_5d.get(stock_id, 0)
+        if net_5d <= 0:
+            continue
+
+        # 計算上漲找賣點的參考空間 (以月線 MA20 與近20日高點作為第一、第二停利目標)
+        upside_to_ma20 = ((curr_ma20 - curr_close) / curr_close) * 100
+        upside_to_high = ((high_20d - curr_close) / curr_close) * 100
+        pct_change = ((curr_close - prev_close) / prev_close) * 100
+
+        candidates.append({
+            "stock_id": stock_id,
+            "name": stock_names.get(stock_id, ""),
+            "close": curr_close,
+            "pct": pct_change,
+            "rsi": curr_rsi,
+            "ma20": curr_ma20,
+            "ma60": curr_ma60,
+            "high_20d": high_20d,
+            "upside_ma20": upside_to_ma20,
+            "upside_high": upside_to_high,
+            "net_5d": net_5d
+        })
+
+    # 排序邏輯：優先挑選「RSI 越低（越超賣）」的標的，若相近則看法人買超力度
+    df_res = pd.DataFrame(candidates)
+    if df_res.empty:
+        return []
+
+    df_res = df_res.sort_values(by=["rsi", "net_5d"], ascending=[True, False]).head(5)
+    return df_res.to_dict("records")
+
+def send_line_message(text):
+    url = "https://line.me"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
+    payload = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": text}]
+    }
+    res = requests.post(url, headers=headers, json=payload)
+    print("LINE Push Status:", res.status_code, res.text)
 
 if __name__ == "__main__":
-    today = datetime.now().strftime("%Y-%m-%d")
-    trends, dips = scan_market()
-    lines = [f"🚀 【AI 精選 Top 10 買賣建議】{today}\n" + "=" * 22]
-    for label, group, start_i in [("🔥 【順勢買進 Top 5】", trends, 1), ("🛡️ 【低接買進 Top 5】", dips, len(trends) + 1)]:
-        if group:
-            lines.append(label)
-            for idx, s in enumerate(group, start_i):
-                lines.append(f"{idx}. {s['title']}（現價 {s['price']:.1f}）\n   🟢 買進：{s['b_lo']:.1f} ～ {s['b_hi']:.1f}\n   🎯 賣出：{s['tp1']:.1f} / {s['tp2']:.1f}\n   🔴 停損：{s['sl']:.1f}")
-    lines.append(f"📱 看盤 APP：\n{APP_URL}")
-    msg = "\n\n".join(lines)
-    print(msg)
-    send_line(msg)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    top5 = run_screener()
+
+    if not top5:
+        msg = (
+            f"📉 【台股逆勢波段選股】{today_str}\n"
+            f"策略：季線上回檔 + RSI超賣止跌 + 法人低接\n\n"
+            f"今日全市場無同時符合「技術超賣」與「法人買超」之標的（可能處於大盤單邊急漲或全面破底期）。"
+        )
+    else:
+        lines = [
+            f"📉 【台股逆勢波段精選 TOP 5】{today_str}",
+            "策略：季線上回檔 + RSI<40止跌 + 5日法人買超\n"
+        ]
+        for idx, s in enumerate(top5, 1):
+            block = (
+                f"{idx}. {s['name']} ({s['stock_id']})  現價: {s['close']:.1f} ({s['pct']:+.2f}%)\n"
+                f"   🟢 買點訊號：RSI {s['rsi']:.1f} 勾頭 | 5日法人 +{int(s['net_5d']):,} 張\n"
+                f"   🔴 賣點參考：月線 {s['ma20']:.1f} (+{s['upside_ma20']:.1f}%) / 前高 {s['high_20d']:.1f} (+{s['upside_high']:.1f}%)\n"
+                f"   🛡️ 防守點位：季線 {s['ma60']:.1f} (跌破停損)"
+            )
+            lines.append(block)
+        lines.append("\n⚠️ 量化篩選僅供研究，進場前請確認無重大基本面利空。")
+        msg = "\n".join(lines)
+
+    send_line_message(msg)
