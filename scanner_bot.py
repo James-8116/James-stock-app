@@ -51,8 +51,6 @@ def calculate_rsi(series, period=14):
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
-
-
 def get_twii_status():
     try:
         df = yf.download("^TWII", period="18mo", progress=False)
@@ -79,6 +77,8 @@ def get_twii_status():
         }
     except Exception:
         return None
+
+
 def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     swing = h60 - l60
     if swing <= 0:
@@ -109,8 +109,6 @@ def check_inst_buy_5d(stock_id):
         return int(round(df[df["date"].isin(recent)]["net"].sum() / 1000))
     except Exception:
         return 0
-
-
 def get_top5_institutional(stock_map):
     id_to_name = {v["id"]: v["name"] for v in stock_map.values()}
     net_dict = {}
@@ -165,29 +163,35 @@ def run_screener(stock_map, is_bull_market=True, is_intraday=False):
                 if t not in data.columns.get_level_values(0):
                     continue
                 df = data[t].dropna(subset=["Close", "Volume"])
-                if len(df) < 62:
+                if len(df) < 66:
                     continue
-                close, low_p = df["Close"], df["Low"]
+                close, open_p, low_p = df["Close"], df["Open"], df["Low"]
                 vol_ma5 = (df["Volume"] / 1000).rolling(5).mean().iloc[-1]
                 ma5 = float(close.rolling(5).mean().iloc[-1])
                 ma20 = float(close.rolling(20).mean().iloc[-1])
-                ma60 = float(close.rolling(60).mean().iloc[-1])
+                ma60_s = close.rolling(60).mean()
+                ma60, ma60_5d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-6])
                 rsi_s = calculate_rsi(close, 14)
                 rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
-                curr_c, prev_c, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(low_p.iloc[-1])
+                curr_c, prev_c, curr_o, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(open_p.iloc[-1]), float(low_p.iloc[-1])
                 h20 = float(df["High"].iloc[-20:].max())
                 h60 = float(df["High"].iloc[-60:].max())
                 l60 = float(df["Low"].iloc[-60:].min())
                 if vol_ma5 < 1000 or curr_c < 15:
                     continue
                 swing = h60 - l60
-                dual_stop = max(ma60, h60 - swing * 0.786)
+                struct_stop = max(ma60, h60 - swing * 0.786)
                 is_rsi_hook = (rsi < 30) and (rsi > prev_rsi)
                 info = stock_map[t]
 
                 if is_bull_market:
-                    if curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < 3.0:
+                    if curr_c <= ma60 or ma60 <= ma60_5d_ago or ((h20 - curr_c) / h20) * 100 < 3.0:
                         continue
+                    if not (curr_c > curr_o or rsi > prev_rsi):
+                        continue
+                    if (curr_c - struct_stop) / curr_c > 0.065:
+                        continue
+                    dual_stop = max(struct_stop, curr_c * 0.94)
                     fib_hit, fib_p, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, 0.015)
                     if not fib_hit or rsi >= 48:
                         continue
@@ -305,7 +309,7 @@ def push_line_message(flex_msg):
 
 def main():
     now_tw = datetime.now(TW_TZ)
-    is_intraday = now_tw.hour < 16  # 16:00 後三大法人更新完畢才算盤後總結
+    is_intraday = now_tw.hour < 16
     now_str = now_tw.strftime("%m/%d %H:%M")
     print(f"[{now_str}] 開始執行台股掃描 (盤中模式={is_intraday})...")
     twii = get_twii_status()
@@ -314,15 +318,13 @@ def main():
     print(f"取得有效上市櫃標的共 {len(stock_map)} 檔")
     picks = run_screener(stock_map, is_bull_market=is_bull, is_intraday=is_intraday)
     print(f"篩選出 {len(picks)} 檔標的")
-
-    # 盤中若無符合標的則靜音略過，避免洗版打擾
     if is_intraday and not picks:
         print("盤中無符合條件之標的，略過推播。")
         return
-
     top_buy, top_sell = ([], []) if is_intraday else get_top5_institutional(stock_map)
     flex_msg = build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str)
     push_line_message(flex_msg)
+
 
 if __name__ == "__main__":
     main()
