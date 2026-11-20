@@ -10,12 +10,8 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID")
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
 FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
+TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
 STREAMLIT_APP_URL = "https://james-stockapp" + ".streamlit" + ".app/"
-
-MY_HOLDINGS = {
-    "2891": {"name": "中信金", "cost": 71.4},
-    "5876": {"name": "上海商銀", "cost": 50.9},
-}
 
 def get_tw_stock_list():
     try:
@@ -60,53 +56,46 @@ def check_inst_buy_5d(stock_id):
     except Exception:
         return 0
 
-def monitor_holdings(stock_map):
-    if not MY_HOLDINGS:
-        return []
-    id_to_ticker = {v["id"]: k for k, v in stock_map.items()}
-    results = []
-    for stock_id, info in MY_HOLDINGS.items():
-        ticker = id_to_ticker.get(stock_id, stock_id + ".TW")
-        cost, name = float(info["cost"]), info["name"]
+def get_top5_institutional(stock_map):
+    """自動取得今日三大法人合計買超前5名與賣超前5名（只統計4碼一般股票）"""
+    id_to_name = {v["id"]: v["name"] for v in stock_map.values()}
+    net_dict = {}
+
+    # 1. 優先嘗試從 FinMind 取得全市場最新一日法人買賣超
+    for days_back in range(0, 5):
+        q_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         try:
-            df = yf.download(ticker, period="4mo", progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            if df.empty or len(df) < 60:
-                continue
-            close = df["Close"]
-            curr_c = float(close.iloc[-1])
-            ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
-            rsi_s = calculate_rsi(close, 14)
-            rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
-            h20 = float(df["High"].iloc[-20:].max())
-            h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
-            swing = h60 - l60
-
-            fib_res_618 = l60 + swing * 0.618
-            fib_ext_1272 = l60 + swing * 1.272
-            fib_stop_786 = h60 - swing * 0.786
-            dual_stop = max(ma60, fib_stop_786)
-            stop_tag = "季線" if ma60 >= fib_stop_786 else "黃金0.786"
-            pnl = ((curr_c - cost) / cost) * 100
-
-            sigs = []
-            if rsi < 30 and rsi > prev_rsi:
-                sigs.append(f"🟢止跌反彈(看5日線{ma5:.1f})")
-            elif rsi < 30:
-                sigs.append("⏳還在跌先觀望")
-            if rsi >= 75: sigs.append("🔥漲多過熱建議高賣")
-            if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append(f"🚀達延伸目標{fib_ext_1272:.1f}高賣")
-            elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐碰黃金壓力{fib_res_618:.1f}高賣")
-            elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append(f"🎯漲回前高{h20:.1f}高賣")
-            if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線先鎖利")
-            if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}{dual_stop:.1f}停損")
-
-            status = " / ".join(sigs) if sigs else f"✅續抱(賣:{fib_res_618:.1f}/守:{dual_stop:.1f})"
-            results.append({"id": stock_id, "name": name, "cost": cost, "close": curr_c, "pnl": pnl, "status": status, "alert": len(sigs) > 0})
+            res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "start_date": q_date, "end_date": q_date, "token": FINMIND_TOKEN}, timeout=15).json()
+            if res.get("msg") == "success" and res.get("data"):
+                df = pd.DataFrame(res["data"])
+                df = df[df["stock_id"].isin(id_to_name.keys())]
+                if not df.empty:
+                    df["net_lots"] = (df["buy"] - df["sell"]) / 1000
+                    grouped = df.groupby("stock_id")["net_lots"].sum()
+                    net_dict = grouped.to_dict()
+                    break
         except Exception:
             pass
-    return results
+
+    # 2. 若 FinMind 無回傳，自動改用證交所 OpenAPI 備援
+    if not net_dict:
+        try:
+            rows = requests.get(TWSE_T86_URL, timeout=15).json()
+            for r in rows:
+                sid = str(r.get("Code", "")).strip()
+                if sid in id_to_name:
+                    val = str(r.get("TotalInstitutionalInvestorsNetBuySell", "0")).replace(",", "")
+                    net_dict[sid] = float(val) / 1000
+        except Exception:
+            pass
+
+    if not net_dict:
+        return [], []
+
+    items = [{"id": k, "name": id_to_name[k], "net": int(round(v))} for k, v in net_dict.items()]
+    top_buy = sorted([x for x in items if x["net"] > 0], key=lambda x: x["net"], reverse=True)[:5]
+    top_sell = sorted([x for x in items if x["net"] < 0], key=lambda x: x["net"])[:5]
+    return top_buy, top_sell
 def run_screener(stock_map):
     tickers = list(stock_map.keys())
     if not tickers:
@@ -158,31 +147,29 @@ def run_screener(stock_map):
         return []
     return pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(5).to_dict("records")
 
-def build_flex_message(today_str, holdings, top5):
+def build_flex_message(today_str, top_buy, top_sell, top5):
     body = []
-    if holdings:
-        body.append({"type": "text", "text": "🔔 持股黃金高賣與雙重防守監控", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
+
+    # 1. 今日三大法人買超 & 賣超 TOP 5 並排雙欄表格
+    body.append({"type": "text", "text": "🏦 今日三大法人買賣超 TOP 5（張）", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
+    if not top_buy and not top_sell:
+        body.append({"type": "text", "text": "今日法人籌碼尚未更新。", "size": "xs", "color": "#666666", "margin": "xs"})
+    else:
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-            {"type": "text", "text": "標的", "size": "xs", "color": "#888888", "flex": 3},
-            {"type": "text", "text": "成本➔現價", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
-            {"type": "text", "text": "損益/操作建議", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
+            {"type": "text", "text": "🔥 買超前五名", "size": "xs", "weight": "bold", "color": "#D32F2F", "flex": 1},
+            {"type": "text", "text": "❄️ 賣超前五名", "size": "xs", "weight": "bold", "color": "#2E7D32", "flex": 1, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
-        for h in holdings:
-            c = "#D32F2F" if h["pnl"] >= 0 else "#2E7D32"
-            body.append({"type": "box", "layout": "horizontal", "margin": "sm", "alignItems": "center", "contents": [
-                {"type": "box", "layout": "vertical", "flex": 3, "contents": [
-                    {"type": "text", "text": h["name"], "size": "xs", "weight": "bold"},
-                    {"type": "text", "text": h["id"], "size": "xxs", "color": "#888888"}
-                ]},
-                {"type": "text", "text": f"{h['cost']:.1f}➔{h['close']:.1f}", "size": "xs", "flex": 4, "align": "center"},
-                {"type": "box", "layout": "vertical", "flex": 4, "contents": [
-                    {"type": "text", "text": f"{h['pnl']:+.1f}%", "size": "xs", "weight": "bold", "color": c, "align": "end"},
-                    {"type": "text", "text": h["status"], "size": "xxs", "color": "#D32F2F" if h["alert"] else "#555555", "align": "end", "wrap": True}
-                ]}
+        for idx in range(5):
+            b_txt = f"{idx+1}.{top_buy[idx]['name']} +{top_buy[idx]['net']:,}" if idx < len(top_buy) else "-"
+            s_txt = f"{idx+1}.{top_sell[idx]['name']} {top_sell[idx]['net']:,}" if idx < len(top_sell) else "-"
+            body.append({"type": "box", "layout": "horizontal", "margin": "xs", "contents": [
+                {"type": "text", "text": b_txt, "size": "xxs", "color": "#D32F2F", "flex": 1},
+                {"type": "text", "text": s_txt, "size": "xxs", "color": "#2E7D32", "flex": 1, "align": "end"},
             ]})
-        body.append({"type": "separator", "margin": "md"})
+    body.append({"type": "separator", "margin": "md"})
 
+    # 2. 黃金分割低接精選 TOP 5
     body.append({"type": "text", "text": "📉 黃金分割＋季線共振低接 TOP 5", "weight": "bold", "size": "sm", "color": "#1E3A8A", "margin": "md"})
     if not top5:
         body.append({"type": "text", "text": "今日全市場無同時符合黃金分割支撐與法人買超之標的。", "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
@@ -213,17 +200,17 @@ def build_flex_message(today_str, holdings, top5):
             body.append({"type": "separator", "margin": "xs", "color": "#F0F0F0"})
 
     return {
-        "type": "flex", "altText": f"📊 台股 AI 波段監控與選股 ({today_str})",
+        "type": "flex", "altText": f"📊 台股 AI 法人籌碼與波段選股 ({today_str})",
         "contents": {
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
-                {"type": "text", "text": "📊 台股 AI 波段監控與選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋白話操作建議", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": "📊 台股 AI 法人籌碼與波段選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
+                {"type": "text", "text": f"資料日期：{today_str} | 法人買賣超＋黃金分割選股", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
                 {"type": "button", "style": "primary", "color": "#2563EB", "height": "sm",
-                 "action": {"type": "uri", "label": "🌐 開啟互動看盤與走勢圖", "uri": STREAMLIT_APP_URL}}
+                 "action": {"type": "uri", "label": "🌐 開啟互動看盤與持股診斷", "uri": STREAMLIT_APP_URL}}
             ]}
         }
     }
@@ -239,4 +226,5 @@ def send_line_flex(flex_msg):
 if __name__ == "__main__":
     today_str = datetime.now().strftime("%Y-%m-%d")
     stock_map = get_tw_stock_list()
-    send_line_flex(build_flex_message(today_str, monitor_holdings(stock_map), run_screener(stock_map)))
+    top_buy, top_sell = get_top5_institutional(stock_map)
+    send_line_flex(build_flex_message(today_str, top_buy, top_sell, run_screener(stock_map)))
