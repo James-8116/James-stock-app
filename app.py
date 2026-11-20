@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import altair as alt
@@ -20,6 +21,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# 讓手機點擊代號輸入框時直接跳出純數字鍵盤
+components.html(
+    """
+    <script>
+    const doc = window.parent.document;
+    const setNumeric = () => {
+        doc.querySelectorAll('input[type="text"], input[type="search"]').forEach(el => {
+            el.setAttribute('inputmode', 'numeric');
+            el.setAttribute('pattern', '[0-9.]*');
+        });
+    };
+    setNumeric();
+    new MutationObserver(setNumeric).observe(doc.body, { childList: true, subtree: true });
+    </script>
+    """,
+    height=0,
+)
+
 FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", ""))
 FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
 TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
@@ -30,12 +49,14 @@ DEFAULT_HOLDINGS = [
     {"代號": "5876", "買進成本": 50.9},
 ]
 
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain, loss = delta.clip(lower=0), -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
+
 
 def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     swing = h60 - l60
@@ -47,7 +68,6 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
             is_conf = abs(v - ma60) / ma60 <= 0.025
             return k, v, fibs, is_conf
     return None, 0.0, fibs, False
-
 @st.cache_data(ttl=55)
 def get_twii_status(lookback_days=60):
     try:
@@ -62,7 +82,7 @@ def get_twii_status(lookback_days=60):
         ma240 = float(close.rolling(240).mean().iloc[-1]) if len(close) >= 240 else float(close.mean())
         rsi_s = calculate_rsi(close, 14)
         rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
-        sub = df.iloc[-lookback_days:]
+        sub = df.iloc[-lookback_days:] if len(df) >= lookback_days else df
         h_val, l_val = float(sub["High"].max()), float(sub["Low"].min())
         swing = h_val - l_val
         return {
@@ -71,10 +91,12 @@ def get_twii_status(lookback_days=60):
             "fib382": h_val - swing * 0.382,
             "fib500": h_val - swing * 0.500,
             "fib618": h_val - swing * 0.618,
-            "fib_ext1272": max(0.0, h_val - swing * 1.272)
+            "fib_ext1272": max(0.0, h_val - swing * 1.272),
         }
     except Exception:
         return None
+
+
 @st.cache_data(ttl=86400)
 def get_all_tw_names(token):
     try:
@@ -86,6 +108,7 @@ def get_all_tw_names(token):
     except Exception:
         return {}
 
+
 @st.cache_data(ttl=86400)
 def get_tw_stock_list(token):
     try:
@@ -93,11 +116,20 @@ def get_tw_stock_list(token):
         if res.get("msg") != "success":
             return {}
         df = pd.DataFrame(res["data"])
-        df = df[df["type"].isin(["twse", "tpex"]) & (df["stock_id"].str.len() == 4) & (df["stock_id"].str.isdigit())]
-        return {r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]} for _, r in df.iterrows()}
+        latest_date = pd.to_datetime(df["date"]).max()
+        cutoff = (latest_date - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        df = df[
+            df["type"].isin(["twse", "tpex"])
+            & (df["stock_id"].str.len() == 4)
+            & (df["stock_id"].str.isdigit())
+            & (df["date"] >= cutoff)
+        ]
+        return {
+            r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]}
+            for _, r in df.iterrows()
+        }
     except Exception:
         return {}
-
 @st.cache_data(ttl=3600)
 def get_top5_institutional(token):
     stock_map = get_tw_stock_list(token)
@@ -141,6 +173,7 @@ def get_top5_institutional(token):
         sell_df["買賣超(張)"] = sell_df["買賣超(張)"].map(lambda x: f"{x:+,}")
     return buy_df, sell_df, data_date
 
+
 @st.cache_data(ttl=3600)
 def download_all_market_data(tickers):
     all_dfs = {}
@@ -159,9 +192,11 @@ def download_all_market_data(tickers):
         except Exception:
             pass
         bar.progress((idx + 1) / total, text=f"下載進度：{idx + 1} / {total}")
-        time.sleep(0.5)
+        time.sleep(0.2)
     bar.empty()
     return all_dfs
+
+
 def check_inst_buy_5d(stock_id, token):
     start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
     params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": stock_id, "start_date": start, "token": token}
@@ -176,13 +211,14 @@ def check_inst_buy_5d(stock_id, token):
     except Exception:
         return 0
 
+
 @st.cache_data(ttl=55)
 def fetch_single_stock(code):
     ticker_str = code + ".TW"
-    df = yf.download(ticker_str, period="4mo", progress=False)
+    df = yf.download(ticker_str, period="18mo", progress=False)
     if df.empty:
         ticker_str = code + ".TWO"
-        df = yf.download(ticker_str, period="4mo", progress=False)
+        df = yf.download(ticker_str, period="18mo", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     cn_names = get_all_tw_names(FINMIND_TOKEN)
@@ -194,7 +230,6 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
-
 with st.sidebar:
     st.header("⏱️ 盤中即時更新設定")
     auto_refresh = st.toggle("🟢 開啟盤中即時自動更新 (60秒)", value=True)
@@ -219,15 +254,17 @@ with st.sidebar:
 
 st.title("📊 台股 AI 波段監控與選股看板")
 
+period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
+sel_period = st.radio("📐 選擇黃金分割波段計算週期（同步連動大盤與個股）：", list(period_map.keys()), index=1, horizontal=True)
+lookback_days = period_map[sel_period]
+
+
 @st.fragment(run_every=refresh_sec)
-def render_live_market_panel():
+def render_live_market_panel(days):
     now_tw = datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S")
     status_txt = "🟢 即時自動更新中 (每60秒)" if auto_refresh else "⏸️ 已暫停自動更新"
     st.caption(f"🕒 最後報價更新：{now_tw}（台灣時間）｜ {status_txt}")
-
-    period_map = {"60日 (一季波段)": 60, "120日 (半年波段)": 120, "240日 (一年長線大底)": 240}
-    sel_period = st.radio("🇹🇼 選擇大盤黃金分割計算週期：", list(period_map.keys()), horizontal=True)
-    twii = get_twii_status(period_map[sel_period])
+    twii = get_twii_status(days)
 
     if twii:
         is_bull = twii["close"] > twii["ma60"]
@@ -244,7 +281,8 @@ def render_live_market_panel():
             r2_2.metric("📐 深度回檔(最後防線)", f"{twii['fib618']:,.0f}")
             r2_3.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
 
-render_live_market_panel()
+
+render_live_market_panel(lookback_days)
 
 if FINMIND_TOKEN:
     buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
@@ -258,54 +296,85 @@ if FINMIND_TOKEN:
                 st.markdown("**❄️ 賣超前五名**")
                 st.table(sell_top5.set_index("代號"))
 
-tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
+tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 黃金分割＋季線共振低接掃描"])
 with tab1:
-    st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
+    st.subheader(f"📋 個股階梯支撐與雙重防守監控（目前基準：{sel_period}，輸入代號即可查詢，成本選填）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
     @st.fragment(run_every=refresh_sec)
-    def render_live_holdings():
+    def render_live_holdings(days):
         rows_out = []
         for _, r in edited_df.iterrows():
             code = str(r.get("代號", "")).strip()
-            cost = float(r.get("買進成本", 0) or 0)
-            if not code or cost <= 0:
+            if not code or code.lower() == "none":
                 continue
+            raw_cost = r.get("買進成本")
+            has_cost = pd.notna(raw_cost) and float(raw_cost or 0) > 0
+            cost = float(raw_cost) if has_cost else 0.0
+
             df, auto_name = fetch_single_stock(code)
             if df.empty or len(df) < 60:
                 continue
             close = df["Close"]
             curr_c = float(close.iloc[-1])
-            ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
+            ma5, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
             rsi_s = calculate_rsi(close, 14)
             rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
             h20 = float(df["High"].iloc[-20:].max())
-            h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
-            swing = h60 - l60
-            fib_res_618, fib_ext_1272, fib_stop_786 = l60 + swing * 0.618, l60 + swing * 1.272, h60 - swing * 0.786
+            sub = df.iloc[-days:] if len(df) >= days else df
+            h_val, l_val = float(sub["High"].max()), float(sub["Low"].min())
+            swing = h_val - l_val
+
+            fib_500 = h_val - swing * 0.500
+            fib_618 = h_val - swing * 0.618
+            fib_ext_1272 = max(0.0, h_val - swing * 1.272)
+            fib_stop_786 = h_val - swing * 0.786
             dual_stop = max(ma60, fib_stop_786)
-            stop_tag = "季線" if ma60 >= fib_stop_786 else "黃金0.786"
-            pnl = ((curr_c - cost) / cost) * 100
+            stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
+            pnl = ((curr_c - cost) / cost) * 100 if has_cost else None
 
             sigs = []
-            if rsi < 30 and rsi > prev_rsi: sigs.append(f"🟢止跌反彈訊號(可試單/目標5日線{ma5:.2f})")
-            elif rsi < 30: sigs.append("⏳還在跌先觀望(別急著接)")
-            if rsi >= 75: sigs.append("🔥漲多過熱(建議分批高賣)")
-            if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金延伸目標(建議高賣)")
-            elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐碰黃金壓力位(適合高賣)")
-            elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯漲回前波高點(適合高賣)")
-            if pnl >= 3.0 and curr_c < ma5: sigs.append("📉跌破5日線(先鎖住獲利)")
-            if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨跌破{stop_tag}{dual_stop:.2f}(建議停損)")
+            if rsi < 30 and rsi > prev_rsi:
+                sigs.append(f"🟢止跌勾頭(目標5日線{ma5:.1f})")
+            elif rsi < 30:
+                sigs.append("⏳超賣修正中(別急著接)")
+            if rsi >= 75:
+                sigs.append("🔥漲多過熱(建議分批高賣)")
+
+            if abs(curr_c - fib_500) / fib_500 <= 0.02:
+                sigs.append("📐回測半山腰(0.500)")
+            elif abs(curr_c - fib_618) / fib_618 <= 0.02:
+                sigs.append("📐觸及最後防線(0.618)")
+            elif curr_c < fib_618:
+                sigs.append(f"⚠️已破0.618防線(下看{fib_ext_1272:.1f})")
+
+            if has_cost:
+                if curr_c >= h20 * 0.985 and pnl > 2:
+                    sigs.append("🎯漲回前高(適合高賣)")
+                if pnl >= 3.0 and curr_c < ma5:
+                    sigs.append("📉破5日線(鎖住獲利)")
+                if curr_c < dual_stop or pnl <= -7.0:
+                    sigs.append(f"🚨跌破{stop_tag}{dual_stop:.1f}(建議停損)")
+            else:
+                if curr_c < ma60:
+                    sigs.append(f"🛡️空頭排列(季線壓力{ma60:.1f})")
 
             rows_out.append({
-                "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
-                "RSI": f"{rsi:.1f}", "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}", "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
-                "🛡️ 雙重停損(季線/Fib0.786)": f"{dual_stop:.2f} ({stop_tag})", "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察"
+                "代號": code, "名稱": auto_name,
+                "成本": f"{cost:.2f}" if has_cost else "-",
+                "現價": f"{curr_c:.2f}",
+                "損益": f"{pnl:+.2f}%" if has_cost else "-",
+                "RSI": f"{rsi:.1f}",
+                "📐 合理回檔(0.500)": f"{fib_500:.2f}",
+                "📐 深度回檔(0.618)": f"{fib_618:.2f}",
+                "⚠️ 恐慌破底(1.272)": f"{fib_ext_1272:.2f}",
+                "🛡️ 雙重防守線": f"{dual_stop:.2f} ({stop_tag})",
+                "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察",
             })
         if rows_out:
             st.table(pd.DataFrame(rows_out).set_index("代號"))
 
-    render_live_holdings()
+    render_live_holdings(lookback_days)
 
 with tab2:
     if not FINMIND_TOKEN:
@@ -351,7 +420,7 @@ with tab2:
                 "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
                 "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
                 "is_rsi_hook": is_rsi_hook, "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
-                "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
+                "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100,
             })
 
         passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
@@ -368,24 +437,14 @@ with tab2:
             st.info("💡 目前條件無符合標的，請在左側放寬篩選條件。")
         else:
             df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(top_n)
-            def format_name(r):
-                tags = []
-                if r["is_conf"]: tags.append("🔥雙支撐")
-                if r["is_rsi_hook"]: tags.append("🟢止跌反彈")
-                return f"{r['name']} {' '.join(tags)}".strip()
-
-            def format_buy_zone(r):
-                low_b, high_b = r["fib_price"] * 0.99, r["fib_price"]
-                status = "✅已到買區" if r["close"] <= high_b * 1.005 else "⏳等拉回"
-                return f"{low_b:.1f}~{high_b:.1f} ({status})"
+            format_name = lambda r: f"{r['name']} {'🔥雙支撐' if r['is_conf'] else ''} {'🟢止跌反彈' if r['is_rsi_hook'] else ''}".strip()
+            format_buy = lambda r: f"{r['fib_price']*0.99:.1f}~{r['fib_price']:.1f} ({'✅已到買區' if r['close'] <= r['fib_price']*1.005 else '⏳等拉回'})"
 
             disp = pd.DataFrame({
-                "代號": df_res["stock_id"],
-                "名稱": df_res.apply(format_name, axis=1),
-                "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
-                "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
-                "🟢 建議低接買點": df_res.apply(format_buy_zone, axis=1),
-                "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r['fib_hit'] != "未觸及" else "未觸及", axis=1),
+                "代號": df_res["stock_id"], "名稱": df_res.apply(format_name, axis=1),
+                "現價": df_res["close"].map(lambda x: f"{x:.1f}"), "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
+                "🟢 建議低接買點": df_res.apply(format_buy, axis=1),
+                "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r["fib_hit"] != "未觸及" else "未觸及", axis=1),
                 "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"), "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
                 "🟢 第一賣點(月線)": df_res.apply(lambda r: f"{r['ma20']:.1f} ({r['up_ma20']:+.1f}%)", axis=1),
                 "🔴 第二賣點(前高)": df_res.apply(lambda r: f"{r['high_20d']:.1f} (+{r['up_high']:.1f}%)", axis=1),
@@ -396,32 +455,19 @@ with tab2:
             opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
             cdf = market_data[sel_row["ticker"]].copy().reset_index()
-            date_col = cdf.columns.tolist().pop(0)
+            date_col = cdf.columns[0]
             fibs = sel_row["fib_dict"]
-            cdf["20日月線"] = cdf["Close"].rolling(20).mean()
-            cdf["60日季線"] = cdf["Close"].rolling(60).mean()
+            cdf["20日月線"], cdf["60日季線"] = cdf["Close"].rolling(20).mean(), cdf["Close"].rolling(60).mean()
             cdf = cdf.tail(60)
 
-            main_df = cdf[[date_col, "Close", "20日月線", "60日季線"]].rename(columns={date_col: "日期", "Close": "收盤價"})
-            main_melt = main_df.melt("日期", var_name="指標", value_name="價格").dropna()
+            main_melt = cdf[[date_col, "Close", "20日月線", "60日季線"]].rename(columns={date_col: "日期", "Close": "收盤價"}).melt("日期", var_name="指標", value_name="價格").dropna()
             main_chart = alt.Chart(main_melt).mark_line(strokeWidth=2.2).encode(
-                x=alt.X("日期:T", title=""),
-                y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
+                x=alt.X("日期:T", title=""), y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
                 color=alt.Color("指標:N", scale=alt.Scale(
                     domain=["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"],
-                    range=["#E60000", "#FF8C00", "#008000", "#6B4C35", "#0055FF", "#D0006F"]
-                ))
+                    range=["#E60000", "#FF8C00", "#008000", "#6B4C35", "#0055FF", "#D0006F"],
+                )),
             )
-
-            fib_df = pd.DataFrame([
-                {"指標": "黃金 0.382", "價格": fibs["0.382"]},
-                {"指標": "黃金 0.500", "價格": fibs["0.500"]},
-                {"指標": "黃金 0.618", "價格": fibs["0.618"]},
-            ])
-            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=list((6, 4)), strokeWidth=1.6).encode(
-                y="價格:Q",
-                color=alt.Color("指標:N")
-            )
-
+            fib_df = pd.DataFrame([{"指標": f"黃金 {k}", "價格": fibs[k]} for k in ["0.382", "0.500", "0.618"]])
+            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=[6, 4], strokeWidth=1.6).encode(y="價格:Q", color=alt.Color("指標:N"))
             st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
-
