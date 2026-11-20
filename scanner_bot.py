@@ -55,13 +55,10 @@ def check_inst_buy_5d(stock_id):
         return df[df["date"].isin(recent)]["net"].sum() / 1000
     except Exception:
         return 0
-
 def get_top5_institutional(stock_map):
-    """自動取得今日三大法人合計買超前5名與賣超前5名（只統計4碼一般股票）"""
     id_to_name = {v["id"]: v["name"] for v in stock_map.values()}
     net_dict = {}
 
-    # 1. 優先嘗試從 FinMind 取得全市場最新一日法人買賣超
     for days_back in range(0, 5):
         q_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         try:
@@ -71,13 +68,11 @@ def get_top5_institutional(stock_map):
                 df = df[df["stock_id"].isin(id_to_name.keys())]
                 if not df.empty:
                     df["net_lots"] = (df["buy"] - df["sell"]) / 1000
-                    grouped = df.groupby("stock_id")["net_lots"].sum()
-                    net_dict = grouped.to_dict()
+                    net_dict = df.groupby("stock_id")["net_lots"].sum().to_dict()
                     break
         except Exception:
             pass
 
-    # 2. 若 FinMind 無回傳，自動改用證交所 OpenAPI 備援
     if not net_dict:
         try:
             rows = requests.get(TWSE_T86_URL, timeout=15).json()
@@ -96,6 +91,7 @@ def get_top5_institutional(stock_map):
     top_buy = sorted([x for x in items if x["net"] > 0], key=lambda x: x["net"], reverse=True)[:5]
     top_sell = sorted([x for x in items if x["net"] < 0], key=lambda x: x["net"])[:5]
     return top_buy, top_sell
+
 def run_screener(stock_map):
     tickers = list(stock_map.keys())
     if not tickers:
@@ -146,11 +142,8 @@ def run_screener(stock_map):
     if not final_list:
         return []
     return pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(5).to_dict("records")
-
 def build_flex_message(today_str, top_buy, top_sell, top5):
     body = []
-
-    # 1. 今日三大法人買超 & 賣超 TOP 5 並排雙欄表格
     body.append({"type": "text", "text": "🏦 今日三大法人買賣超 TOP 5（張）", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
     if not top_buy and not top_sell:
         body.append({"type": "text", "text": "今日法人籌碼尚未更新。", "size": "xs", "color": "#666666", "margin": "xs"})
@@ -169,14 +162,13 @@ def build_flex_message(today_str, top_buy, top_sell, top5):
             ]})
     body.append({"type": "separator", "margin": "md"})
 
-    # 2. 黃金分割低接精選 TOP 5
     body.append({"type": "text", "text": "📉 黃金分割＋季線共振低接 TOP 5", "weight": "bold", "size": "sm", "color": "#1E3A8A", "margin": "md"})
     if not top5:
         body.append({"type": "text", "text": "今日全市場無同時符合黃金分割支撐與法人買超之標的。", "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
     else:
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的/法人", "size": "xs", "color": "#888888", "flex": 3},
-            {"type": "text", "text": "現價/支撐共振", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
+            {"type": "text", "text": "現價/低接買點", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
             {"type": "text", "text": "賣點/雙重防守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
@@ -190,7 +182,7 @@ def build_flex_message(today_str, top_buy, top_sell, top5):
                 ]},
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
                     {"type": "text", "text": f"{s['close']:.1f}({s['pct']:+.1f}%)", "size": "xs", "weight": "bold", "color": c, "align": "center"},
-                    {"type": "text", "text": f"Fib {s['fib_hit']}({s['fib_price']:.1f})", "size": "xxs", "color": "#1D4ED8", "align": "center"}
+                    {"type": "text", "text": f"買:{s['fib_price']*0.99:.1f}~{s['fib_price']:.1f}", "size": "xxs", "color": "#1D4ED8", "align": "center"}
                 ]},
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
                     {"type": "text", "text": f"賣:{s['ma20']:.1f}/{s['high_20d']:.1f}", "size": "xxs", "color": "#D32F2F", "align": "end"},
@@ -205,7 +197,7 @@ def build_flex_message(today_str, top_buy, top_sell, top5):
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
                 {"type": "text", "text": "📊 台股 AI 法人籌碼與波段選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 法人買賣超＋黃金分割選股", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": f"資料日期：{today_str} | 法人買賣超＋黃金分割買賣點", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
