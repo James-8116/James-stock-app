@@ -38,7 +38,6 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
 
 @st.cache_data(ttl=600)
 def get_twii_status():
-    """取得台灣加權指數 (^TWII) 多空狀態與黃金分割點位"""
     try:
         df = yf.download("^TWII", period="4mo", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -180,6 +179,54 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
+with st.sidebar:
+    st.header("⚙️ 全市場選股參數微調")
+    rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
+    min_pullback = st.slider("距20日高點至少回檔 (%)", 1, 20, 3, 1)
+    min_vol = st.number_input("5日均量下限 (張)", 300, 10000, 1000, 100)
+    min_price = st.number_input("最低股價 (元)", 10, 200, 15, 5)
+    st.divider()
+    req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
+    req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
+    fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.0, 1.5, 0.5) / 100
+    req_ma20 = st.checkbox("必須跌破 20 日月線", value=False)
+    req_rebound = st.checkbox("必須當日止跌 (收紅K或RSI勾頭)", value=False)
+    req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=True)
+    top_n = st.slider("顯示精選檔數", 3, 15, 5)
+    st.divider()
+    if not FINMIND_TOKEN:
+        FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
+
+st.title("📊 台股 AI 波段監控與選股看板")
+
+twii = get_twii_status()
+if twii:
+    is_bull = twii["close"] > twii["ma60"]
+    market_mood = "🟢 季線之上（偏多操作，可正常低接）" if is_bull else "🚨 跌破季線（空頭修正，縮小試單）"
+    if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
+        market_mood += " ｜ 🟢大盤超賣止跌勾頭"
+    with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
+        m2.metric("🛡️ 60日季線防線", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
+        m3.metric("📐 黃金 0.382 支撐", f"{twii['fib382']:,.0f}")
+        m4.metric("📐 黃金 0.500 支撐", f"{twii['fib500']:,.0f}")
+        m5.metric("📐 黃金 0.618 支撐", f"{twii['fib618']:,.0f}")
+
+if FINMIND_TOKEN:
+    buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
+    if not buy_top5.empty or not sell_top5.empty:
+        with st.expander(f"🏦 三大法人合計買賣超 TOP 5（資料日期：{inst_date}）", expanded=False):
+            c_buy, c_sell = st.columns(2)
+            with c_buy:
+                st.markdown("**🔥 買超前五名**")
+                st.table(buy_top5.set_index("代號"))
+            with c_sell:
+                st.markdown("**❄️ 賣超前五名**")
+                st.table(sell_top5.set_index("代號"))
+
+tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
+
 with tab1:
     st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
@@ -190,34 +237,25 @@ with tab1:
         cost = float(r.get("買進成本", 0) or 0)
         if not code or cost <= 0:
             continue
-
         df, auto_name = fetch_single_stock(code)
         if df.empty or len(df) < 60:
             continue
-
         close = df["Close"]
         curr_c = float(close.iloc[-1])
-        ma5 = float(close.rolling(5).mean().iloc[-1])
-        ma20 = float(close.rolling(20).mean().iloc[-1])
-        ma60 = float(close.rolling(60).mean().iloc[-1])
+        ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
         rsi_s = calculate_rsi(close, 14)
         rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
         h20 = float(df["High"].iloc[-20:].max())
         h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
         swing = h60 - l60
-
-        fib_res_618 = l60 + swing * 0.618
-        fib_ext_1272 = l60 + swing * 1.272
-        fib_stop_786 = h60 - swing * 0.786
+        fib_res_618, fib_ext_1272, fib_stop_786 = l60 + swing * 0.618, l60 + swing * 1.272, h60 - swing * 0.786
         dual_stop = max(ma60, fib_stop_786)
         stop_tag = "季線" if ma60 >= fib_stop_786 else "黃金0.786"
         pnl = ((curr_c - cost) / cost) * 100
 
         sigs = []
-        if rsi < 30 and rsi > prev_rsi:
-            sigs.append(f"🟢止跌反彈訊號(可試單/目標5日線{ma5:.2f})")
-        elif rsi < 30:
-            sigs.append("⏳還在跌先觀望(別急著接)")
+        if rsi < 30 and rsi > prev_rsi: sigs.append(f"🟢止跌反彈訊號(可試單/目標5日線{ma5:.2f})")
+        elif rsi < 30: sigs.append("⏳還在跌先觀望(別急著接)")
         if rsi >= 75: sigs.append("🔥漲多過熱(建議分批高賣)")
         if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金延伸目標(建議高賣)")
         elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐碰黃金壓力位(適合高賣)")
@@ -227,11 +265,8 @@ with tab1:
 
         rows_out.append({
             "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
-            "RSI": f"{rsi:.1f}",
-            "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}",
-            "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
-            "🛡️ 雙重停損(季線/Fib0.786)": f"{dual_stop:.2f} ({stop_tag})",
-            "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察"
+            "RSI": f"{rsi:.1f}", "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}", "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
+            "🛡️ 雙重停損(季線/Fib0.786)": f"{dual_stop:.2f} ({stop_tag})", "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察"
         })
 
     if rows_out:
@@ -297,8 +332,7 @@ with tab2:
                 return f"{r['name']} {' '.join(tags)}".strip()
 
             def format_buy_zone(r):
-                low_b = r["fib_price"] * 0.99
-                high_b = r["fib_price"]
+                low_b, high_b = r["fib_price"] * 0.99, r["fib_price"]
                 status = "✅已到買區" if r["close"] <= high_b * 1.005 else "⏳等拉回"
                 return f"{low_b:.1f}~{high_b:.1f} ({status})"
 
