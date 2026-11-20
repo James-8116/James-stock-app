@@ -36,6 +36,18 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     return None, 0.0, fibs, False
 
 @st.cache_data(ttl=86400)
+def get_all_tw_names(token):
+    """快取 24 小時：取得全市場（含股票與 ETF）中文名稱對照表"""
+    try:
+        res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo", "token": token}, timeout=15).json()
+        if res.get("msg") != "success":
+            return {}
+        df = pd.DataFrame(res["data"])
+        return dict(zip(df["stock_id"].astype(str), df["stock_name"]))
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=86400)
 def get_tw_stock_list(token):
     try:
         res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo", "token": token}, timeout=15).json()
@@ -92,12 +104,16 @@ def fetch_single_stock(code):
         df = yf.download(ticker_str, period="4mo", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    stock_name = code
-    try:
-        info = yf.Ticker(ticker_str).info
-        stock_name = info.get("shortName") or info.get("longName") or code
-    except Exception:
-        pass
+    
+    # 優先從 FinMind 取得繁體中文股名（支援個股與 ETF）
+    cn_names = get_all_tw_names(FINMIND_TOKEN)
+    stock_name = cn_names.get(code)
+    if not stock_name:
+        try:
+            info = yf.Ticker(ticker_str).info
+            stock_name = info.get("shortName") or info.get("longName") or code
+        except Exception:
+            stock_name = code
     return df, stock_name
 with st.sidebar:
     st.header("⚙️ 全市場選股參數微調")
