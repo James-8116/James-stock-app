@@ -115,10 +115,10 @@ with st.sidebar:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股高賣與防守監控", "📉 黃金分割低接全市場掃描"])
+tab1, tab2 = st.tabs(["🔔 持股黃金高賣與防守監控", "📉 黃金分割低接全市場掃描"])
 
 with tab1:
-    st.subheader("📋 持股高賣與防守即時監控（只需輸入代號與成本，按 Enter 自動帶出名稱與損益）")
+    st.subheader("📋 持股黃金高賣與防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
     rows_out = []
@@ -139,17 +139,27 @@ with tab1:
         ma60 = float(close.rolling(60).mean().iloc[-1])
         rsi = float(calculate_rsi(close, 14).iloc[-1])
         h20 = float(df["High"].iloc[-20:].max())
+        h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
+        swing = h60 - l60
+        fib_res_618 = l60 + swing * 0.618
+        fib_ext_1272 = l60 + swing * 1.272
         pnl = ((curr_c - cost) / cost) * 100
 
         sigs = []
         if rsi >= 75: sigs.append("🔥RSI過熱高賣")
-        if curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
-        if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
+        if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金1.272延伸目標")
+        elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐達黃金0.618壓力賣點")
+        elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
+        if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線移動停利")
         if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
 
         rows_out.append({
             "代號": code, "名稱": auto_name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
-            "RSI": f"{rsi:.1f}", "5日線": f"{ma5:.2f}", "月線賣點": f"{ma20:.2f}", "前高賣點": f"{h20:.2f}", "季線停損": f"{ma60:.2f}",
+            "RSI": f"{rsi:.1f}",
+            "📐 黃金壓力(0.618)": f"{fib_res_618:.2f}",
+            "🚀 黃金延伸(1.272)": f"{fib_ext_1272:.2f}",
+            "前高賣點": f"{h20:.2f}",
+            "🛡️ 季線停損": f"{ma60:.2f}",
             "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
         })
 
