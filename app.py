@@ -93,7 +93,7 @@ def get_twii_status(lookback_days=60):
             "fib382": h_val - swing * 0.382,
             "fib500": h_val - swing * 0.500,
             "fib618": h_val - swing * 0.618,
-            "fib_ext1272": max(0.0, h_val - swing * 1.272),
+            "fib786": h_val - swing * 0.786,
         }
     except Exception:
         return None
@@ -283,9 +283,9 @@ def render_live_market_panel(days):
             r1_2.metric("🛡️ 中期生命線(季線)", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
             r1_3.metric("🏛️ 長線牛熊線(年線)", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
             r2_1, r2_2, r2_3 = st.columns(3)
-            r2_1.metric("📐 合理回檔(半山腰)", f"{twii['fib500']:,.0f}")
-            r2_2.metric("📐 深度回檔(最後防線)", f"{twii['fib618']:,.0f}")
-            r2_3.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
+            r2_1.metric("📐 合理回檔(0.500)", f"{twii['fib500']:,.0f}")
+            r2_2.metric("📐 深度回檔(0.618)", f"{twii['fib618']:,.0f}")
+            r2_3.metric("🧱 極限防守線(0.786)", f"{twii['fib786']:,.0f}")
 
 
 render_live_market_panel(twii_days)
@@ -335,10 +335,9 @@ with tab1:
 
             fib_500 = h_val - swing * 0.500
             fib_618 = h_val - swing * 0.618
-            fib_ext_1272 = max(0.0, h_val - swing * 1.272)
-            fib_stop_786 = h_val - swing * 0.786
-            dual_stop = max(ma60, fib_stop_786)
-            stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
+            fib_786 = h_val - swing * 0.786
+            dual_stop = max(ma60, fib_786)
+            stop_tag = "季線" if ma60 >= fib_786 else "Fib0.786"
             pnl = ((curr_c - cost) / cost) * 100 if has_cost else None
 
             sigs = []
@@ -352,9 +351,11 @@ with tab1:
             if abs(curr_c - fib_500) / fib_500 <= 0.02:
                 sigs.append("📐回測半山腰(0.500)")
             elif abs(curr_c - fib_618) / fib_618 <= 0.02:
-                sigs.append("📐觸及最後防線(0.618)")
+                sigs.append("📐觸及深度防線(0.618)")
+            elif curr_c < fib_786:
+                sigs.append(f"🚨跌破0.786防線(下看區間低點{l_val:.1f})")
             elif curr_c < fib_618:
-                sigs.append(f"⚠️已破0.618防線(下看{fib_ext_1272:.1f})")
+                sigs.append(f"⚠️破0.618(下看0.786防線{fib_786:.1f})")
 
             if has_cost:
                 if curr_c >= h20 * 0.985 and pnl > 2:
@@ -373,7 +374,7 @@ with tab1:
                 "現價": f"{curr_c:.2f}",
                 "📐 合理回檔(0.500)": f"{fib_500:.2f}",
                 "📐 深度回檔(0.618)": f"{fib_618:.2f}",
-                "⚠️ 恐慌破底(1.272)": f"{fib_ext_1272:.2f}",
+                "🧱 極限防守(0.786)": f"{fib_786:.2f}",
                 "🛡️ 雙重防守線": f"{dual_stop:.2f} ({stop_tag})",
                 "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察",
                 "成本": f"{cost:.2f}" if has_cost else "-",
