@@ -80,6 +80,15 @@ def check_inst_buy_5d(stock_id, token):
         return df[df["date"].isin(recent)]["net"].sum() / 1000
     except Exception:
         return 0
+
+@st.cache_data(ttl=600)
+def fetch_single_stock(code):
+    df = yf.download(code + ".TW", period="4mo", progress=False)
+    if df.empty:
+        df = yf.download(code + ".TWO", period="4mo", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 with st.sidebar:
     st.header("⚙️ 全市場選股參數微調")
     rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
@@ -101,53 +110,44 @@ st.title("📊 台股 AI 波段監控與選股看板")
 tab1, tab2 = st.tabs(["🔔 持股高賣與防守監控", "📉 黃金分割低接全市場掃描"])
 
 with tab1:
-    st.subheader("📋 編輯或新增你要監控的持股")
-    st.caption("直接在下方表格修改代號、成本或按「+」新增一列，按下診斷即可查看高賣訊號與成本線圖。")
+    st.subheader("📋 持股高賣與防守即時監控（修改後按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
 
-    if st.button("🔍 立即診斷持股高賣訊號", type="primary"):
-        rows_out, chart_targets = [], {}
-        for _, r in edited_df.iterrows():
-            code, name = str(r.get("代號", "")).strip(), str(r.get("名稱", "")).strip()
-            cost = float(r.get("買進成本", 0) or 0)
-            if not code or cost <= 0:
-                continue
-            df = yf.download(code + ".TW", period="4mo", progress=False)
-            if df.empty:
-                df = yf.download(code + ".TWO", period="4mo", progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            if df.empty or len(df) < 60:
-                continue
+    rows_out = []
+    for _, r in edited_df.iterrows():
+        code = str(r.get("代號", "")).strip()
+        name = str(r.get("名稱", "")).strip() or code
+        cost = float(r.get("買進成本", 0) or 0)
+        if not code or cost <= 0:
+            continue
 
-            close = df["Close"]
-            curr_c = float(close.iloc[-1])
-            ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
-            rsi = float(calculate_rsi(close, 14).iloc[-1])
-            h20 = float(df["High"].iloc[-20:].max())
-            pnl = ((curr_c - cost) / cost) * 100
+        df = fetch_single_stock(code)
+        if df.empty or len(df) < 60:
+            continue
 
-            sigs = []
-            if rsi >= 75: sigs.append("🔥RSI過熱高賣")
-            if curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
-            if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
-            if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
+        close = df["Close"]
+        curr_c = float(close.iloc[-1])
+        ma5 = float(close.rolling(5).mean().iloc[-1])
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma60 = float(close.rolling(60).mean().iloc[-1])
+        rsi = float(calculate_rsi(close, 14).iloc[-1])
+        h20 = float(df["High"].iloc[-20:].max())
+        pnl = ((curr_c - cost) / cost) * 100
 
-            rows_out.append({
-                "代號": code, "名稱": name, "成本": f"{cost:.1f}", "現價": f"{curr_c:.1f}", "損益": f"{pnl:+.2f}%",
-                "RSI": f"{rsi:.1f}", "5日線": f"{ma5:.1f}", "月線賣點": f"{ma20:.1f}", "前高賣點": f"{h20:.1f}", "季線停損": f"{ma60:.1f}",
-                "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
-            })
-            chart_targets[f"{code} {name}"] = (df, cost)
+        sigs = []
+        if rsi >= 75: sigs.append("🔥RSI過熱高賣")
+        if curr_c >= h20 * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
+        if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
+        if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
 
-        if rows_out:
-            st.dataframe(pd.DataFrame(rows_out), use_container_width=True, hide_index=True)
-            sel_h = st.selectbox("選擇持股檢視成本與均線位置：", list(chart_targets.keys()))
-            hdf, hcost = chart_targets[sel_h]
-            hdf["成本線"], hdf["5日線"], hdf["20日月線"], hdf["60日季線"] = hcost, hdf["Close"].rolling(5).mean(), hdf["Close"].rolling(20).mean(), hdf["Close"].rolling(60).mean()
-            p_df = hdf[["Close", "成本線", "5日線", "20日月線", "60日季線"]].tail(60)
-            p_df.columns = ["收盤價", "買進成本線", "5日線(移動停利)", "20日月線", "60日季線(停損)"]
-            st.line_chart(p_df, color=["#FF4B4B", "#FFFFFF", "#19D3F3", "#FFA500", "#00CC96"])
+        rows_out.append({
+            "代號": code, "名稱": name, "成本": f"{cost:.2f}", "現價": f"{curr_c:.2f}", "損益": f"{pnl:+.2f}%",
+            "RSI": f"{rsi:.1f}", "5日線": f"{ma5:.2f}", "月線賣點": f"{ma20:.2f}", "前高賣點": f"{h20:.2f}", "季線停損": f"{ma60:.2f}",
+            "操作訊號": " / ".join(sigs) if sigs else "✅ 續抱觀察中"
+        })
+
+    if rows_out:
+        st.dataframe(pd.DataFrame(rows_out), use_container_width=True, hide_index=True)
 
 with tab2:
     if not FINMIND_TOKEN:
