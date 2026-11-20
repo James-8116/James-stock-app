@@ -311,7 +311,14 @@ with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
         st.stop()
-    if st.button("🚀 開始全市場低接掃描", type="primary") or "market_cached" in st.session_state:
+    b1, b2 = st.columns([1, 1])
+    run_scan = b1.button("🚀 開始全市場低接掃描", type="primary", use_container_width=True)
+    force_refresh = b2.button("🔄 強制重抓盤中最新報價", use_container_width=True)
+    if force_refresh:
+        download_all_market_data.clear()
+        st.session_state["market_cached"] = True
+
+    if run_scan or force_refresh or "market_cached" in st.session_state:
         stock_map = get_tw_stock_list(FINMIND_TOKEN)
         if not stock_map:
             st.error("無法取得台股清單，請檢查 Token。")
@@ -417,3 +424,4 @@ with tab2:
             )
 
             st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
+
