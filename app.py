@@ -37,7 +37,6 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
 
 @st.cache_data(ttl=86400)
 def get_all_tw_names(token):
-    """快取 24 小時：取得全市場（含股票與 ETF）中文名稱對照表"""
     try:
         res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo", "token": token}, timeout=15).json()
         if res.get("msg") != "success":
@@ -80,7 +79,6 @@ def download_all_market_data(tickers):
         time.sleep(0.5)
     bar.empty()
     return all_dfs
-
 def check_inst_buy_5d(stock_id, token):
     start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
     params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": stock_id, "start_date": start, "token": token}
@@ -104,8 +102,6 @@ def fetch_single_stock(code):
         df = yf.download(ticker_str, period="4mo", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
-    # 優先從 FinMind 取得繁體中文股名（支援個股與 ETF）
     cn_names = get_all_tw_names(FINMIND_TOKEN)
     stock_name = cn_names.get(code)
     if not stock_name:
@@ -115,6 +111,7 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
+
 with st.sidebar:
     st.header("⚙️ 全市場選股參數微調")
     rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
@@ -156,7 +153,8 @@ with tab1:
         ma5 = float(close.rolling(5).mean().iloc[-1])
         ma20 = float(close.rolling(20).mean().iloc[-1])
         ma60 = float(close.rolling(60).mean().iloc[-1])
-        rsi = float(calculate_rsi(close, 14).iloc[-1])
+        rsi_s = calculate_rsi(close, 14)
+        rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
         h20 = float(df["High"].iloc[-20:].max())
         h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
         swing = h60 - l60
@@ -169,6 +167,10 @@ with tab1:
         pnl = ((curr_c - cost) / cost) * 100
 
         sigs = []
+        if rsi < 30 and rsi > prev_rsi:
+            sigs.append(f"🟢RSI<30超賣勾頭(反彈看5日線{ma5:.2f})")
+        elif rsi < 30:
+            sigs.append("⏳RSI<30超賣(等勾頭)")
         if rsi >= 75: sigs.append("🔥RSI過熱高賣")
         if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append("🚀達黃金1.272延伸目標")
         elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append("📐達黃金0.618壓力賣點")
@@ -218,11 +220,13 @@ with tab2:
                 continue
             swing = h60 - l60
             dual_stop = max(ma60, h60 - swing * 0.786)
+            is_rsi_hook = (curr_rsi < 30) and (curr_rsi > prev_rsi)
             info = stock_map[t]
             passed.append({
                 "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
                 "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
-                "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20, "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
+                "is_rsi_hook": is_rsi_hook, "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
+                "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
             })
 
         passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
@@ -239,9 +243,15 @@ with tab2:
             st.info("💡 目前條件無符合標的，請在左側放寬篩選條件。")
         else:
             df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(top_n)
+            def format_name(r):
+                tags = []
+                if r["is_conf"]: tags.append("🔥雙支撐")
+                if r["is_rsi_hook"]: tags.append("🟢超賣勾頭")
+                return f"{r['name']} {' '.join(tags)}".strip()
+
             disp = pd.DataFrame({
                 "代號": df_res["stock_id"],
-                "名稱": df_res.apply(lambda r: f"{r['name']} 🔥雙支撐" if r["is_conf"] else r["name"], axis=1),
+                "名稱": df_res.apply(format_name, axis=1),
                 "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
                 "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
                 "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r['fib_hit'] != "未觸及" else "未觸及", axis=1),
