@@ -9,6 +9,18 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="台股 AI 波段監控與選股", page_icon="📊", layout="wide")
 
+# 強制指標卡片與表格文字自動換行，不截斷成 ...
+st.markdown("""
+<style>
+[data-testid="stMetricLabel"] p, [data-testid="stMetricValue"] div {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    line-height: 1.3 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", ""))
 FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
 TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
@@ -63,7 +75,6 @@ def get_twii_status(lookback_days=60):
         }
     except Exception:
         return None
-
 @st.cache_data(ttl=86400)
 def get_all_tw_names(token):
     try:
@@ -86,6 +97,7 @@ def get_tw_stock_list(token):
         return {r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]} for _, r in df.iterrows()}
     except Exception:
         return {}
+
 @st.cache_data(ttl=3600)
 def get_top5_institutional(token):
     stock_map = get_tw_stock_list(token)
@@ -150,7 +162,6 @@ def download_all_market_data(tickers):
         time.sleep(0.5)
     bar.empty()
     return all_dfs
-
 def check_inst_buy_5d(stock_id, token):
     start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
     params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": stock_id, "start_date": start, "token": token}
@@ -183,6 +194,7 @@ def fetch_single_stock(code):
         except Exception:
             stock_name = code
     return df, stock_name
+
 with st.sidebar:
     st.header("⚙️ 全市場選股參數微調")
     rsi_limit = st.slider("14日 RSI 超賣上限", 25, 60, 48, 1)
@@ -213,13 +225,14 @@ if twii:
     if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
         market_mood += " ｜ 🟢大盤超賣止跌勾頭"
     with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
-        m2.metric("🛡️ 中期生命線(季線)", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
-        m3.metric("🏛️ 長線牛熊線(年線)", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
-        m4.metric("📐 合理回檔(半山腰)", f"{twii['fib500']:,.0f}")
-        m5.metric("📐 深度回檔(最後防線)", f"{twii['fib618']:,.0f}")
-        m6.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
+        r1_1, r1_2, r1_3 = st.columns(3)
+        r1_1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
+        r1_2.metric("🛡️ 中期生命線(季線)", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
+        r1_3.metric("🏛️ 長線牛熊線(年線)", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
+        r2_1, r2_2, r2_3 = st.columns(3)
+        r2_1.metric("📐 合理回檔(半山腰)", f"{twii['fib500']:,.0f}")
+        r2_2.metric("📐 深度回檔(最後防線)", f"{twii['fib618']:,.0f}")
+        r2_3.metric("⚠️ 恐慌破底測算線", f"{twii['fib_ext1272']:,.0f}")
 
 if FINMIND_TOKEN:
     buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
@@ -234,7 +247,6 @@ if FINMIND_TOKEN:
                 st.table(sell_top5.set_index("代號"))
 
 tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
-
 with tab1:
     st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
     edited_df = st.data_editor(pd.DataFrame(DEFAULT_HOLDINGS), num_rows="dynamic", use_container_width=True, hide_index=True)
@@ -279,6 +291,7 @@ with tab1:
 
     if rows_out:
         st.table(pd.DataFrame(rows_out).set_index("代號"))
+
 with tab2:
     if not FINMIND_TOKEN:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
