@@ -80,8 +80,13 @@ def monitor_holdings(stock_map):
             h20 = float(df["High"].iloc[-20:].max())
             h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
             swing = h60 - l60
-            fib_res_618 = l60 + swing * 0.618   # 黃金反彈壓力 (0.618)
-            fib_ext_1272 = l60 + swing * 1.272  # 黃金延伸目標 (1.272)
+
+            # 黃金賣點與雙重防守停損 (取 季線 與 黃金0.786 較高者)
+            fib_res_618 = l60 + swing * 0.618
+            fib_ext_1272 = l60 + swing * 1.272
+            fib_stop_786 = h60 - swing * 0.786
+            dual_stop = max(ma60, fib_stop_786)
+            stop_tag = "季線" if ma60 >= fib_stop_786 else "Fib0.786"
             pnl = ((curr_c - cost) / cost) * 100
 
             sigs = []
@@ -90,9 +95,9 @@ def monitor_holdings(stock_map):
             elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐達黃金0.618({fib_res_618:.1f})")
             elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append(f"🎯達前高({h20:.1f})")
             if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
-            if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
+            if curr_c < dual_stop or pnl <= -7.0: sigs.append(f"🚨破{stop_tag}({dual_stop:.1f})停損")
 
-            status = " / ".join(sigs) if sigs else f"✅續抱(賣:{fib_res_618:.1f}/{fib_ext_1272:.1f})"
+            status = " / ".join(sigs) if sigs else f"✅續抱(賣:{fib_res_618:.1f}/守:{dual_stop:.1f})"
             results.append({"id": stock_id, "name": name, "cost": cost, "close": curr_c, "pnl": pnl, "status": status, "alert": len(sigs) > 0})
         except Exception:
             pass
@@ -123,8 +128,10 @@ def run_screener(stock_map):
                 fib_hit, fib_p = check_fib_touch(curr_c, curr_l, h60, l60, 0.015)
                 if not fib_hit or rsi >= 48:
                     continue
+                swing = h60 - l60
+                dual_stop = max(ma60, h60 - swing * 0.786)
                 info = stock_map[t]
-                passed.append({"stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "ma20": ma20, "ma60": ma60, "high_20d": h20})
+                passed.append({"stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20})
         except Exception:
             pass
         time.sleep(0.5)
@@ -143,11 +150,11 @@ def run_screener(stock_map):
 def build_flex_message(today_str, holdings, top5):
     body = []
     if holdings:
-        body.append({"type": "text", "text": "🔔 持股黃金高賣與防守監控", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
+        body.append({"type": "text", "text": "🔔 持股黃金高賣與雙重防守監控", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的", "size": "xs", "color": "#888888", "flex": 3},
             {"type": "text", "text": "成本➔現價", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
-            {"type": "text", "text": "損益/黃金賣點", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
+            {"type": "text", "text": "損益/黃金攻守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
         for h in holdings:
@@ -172,7 +179,7 @@ def build_flex_message(today_str, holdings, top5):
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的/法人", "size": "xs", "color": "#888888", "flex": 3},
             {"type": "text", "text": "現價/支撐", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
-            {"type": "text", "text": "賣點/防守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
+            {"type": "text", "text": "賣點/雙重防守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
         for s in top5:
@@ -188,7 +195,7 @@ def build_flex_message(today_str, holdings, top5):
                 ]},
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
                     {"type": "text", "text": f"賣:{s['ma20']:.1f}/{s['high_20d']:.1f}", "size": "xxs", "color": "#D32F2F", "align": "end"},
-                    {"type": "text", "text": f"守:季{s['ma60']:.1f}", "size": "xxs", "color": "#2E7D32", "align": "end"}
+                    {"type": "text", "text": f"守:{s['dual_stop']:.1f}", "size": "xxs", "color": "#2E7D32", "align": "end"}
                 ]}
             ]})
             body.append({"type": "separator", "margin": "xs", "color": "#F0F0F0"})
@@ -199,7 +206,7 @@ def build_flex_message(today_str, holdings, top5):
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
                 {"type": "text", "text": "📊 台股 AI 波段監控與選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 季線保護＋黃金分割", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋季線保護", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
