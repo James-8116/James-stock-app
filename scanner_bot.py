@@ -305,7 +305,7 @@ def push_line_message(flex_msg):
 
 def main():
     now_tw = datetime.now(TW_TZ)
-    is_intraday = now_tw.hour < 14
+    is_intraday = now_tw.hour < 16  # 16:00 後三大法人更新完畢才算盤後總結
     now_str = now_tw.strftime("%m/%d %H:%M")
     print(f"[{now_str}] 開始執行台股掃描 (盤中模式={is_intraday})...")
     twii = get_twii_status()
@@ -314,10 +314,15 @@ def main():
     print(f"取得有效上市櫃標的共 {len(stock_map)} 檔")
     picks = run_screener(stock_map, is_bull_market=is_bull, is_intraday=is_intraday)
     print(f"篩選出 {len(picks)} 檔標的")
+
+    # 盤中若無符合標的則靜音略過，避免洗版打擾
+    if is_intraday and not picks:
+        print("盤中無符合條件之標的，略過推播。")
+        return
+
     top_buy, top_sell = ([], []) if is_intraday else get_top5_institutional(stock_map)
     flex_msg = build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str)
     push_line_message(flex_msg)
-
 
 if __name__ == "__main__":
     main()
