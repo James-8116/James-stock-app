@@ -35,15 +35,17 @@ def calculate_rsi(series, period=14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-def check_fib_touch(curr_c, curr_l, h60, l60, tol=0.015):
+def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     swing = h60 - l60
     if swing <= 0:
-        return None, 0.0
+        return None, 0.0, False
     for k, ratio in [("0.382", 0.382), ("0.500", 0.500), ("0.618", 0.618)]:
         v = h60 - swing * ratio
         if abs(curr_c - v) / v <= tol or abs(curr_l - v) / v <= tol:
-            return k, v
-    return None, 0.0
+            # 判斷該黃金分割位是否與 60 日季線重疊（價差 <= 2.5%）形成雙重支撐共振
+            is_confluence = abs(v - ma60) / ma60 <= 0.025
+            return k, v, is_confluence
+    return None, 0.0, False
 
 def check_inst_buy_5d(stock_id):
     start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
@@ -81,7 +83,6 @@ def monitor_holdings(stock_map):
             h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
             swing = h60 - l60
 
-            # 黃金賣點與雙重防守停損 (取 季線 與 黃金0.786 較高者)
             fib_res_618 = l60 + swing * 0.618
             fib_ext_1272 = l60 + swing * 1.272
             fib_stop_786 = h60 - swing * 0.786
@@ -125,18 +126,23 @@ def run_screener(stock_map):
                 h20, h60, l60 = float(df["High"].iloc[-20:].max()), float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
                 if vol_ma5 < 1000 or curr_c < 15 or curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < 3.0:
                     continue
-                fib_hit, fib_p = check_fib_touch(curr_c, curr_l, h60, l60, 0.015)
+                fib_hit, fib_p, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, 0.015)
                 if not fib_hit or rsi >= 48:
                     continue
                 swing = h60 - l60
                 dual_stop = max(ma60, h60 - swing * 0.786)
                 info = stock_map[t]
-                passed.append({"stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20})
+                passed.append({
+                    "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
+                    "rsi": rsi, "fib_hit": fib_hit, "fib_price": fib_p, "is_conf": is_conf,
+                    "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20
+                })
         except Exception:
             pass
         time.sleep(0.5)
 
-    passed = sorted(passed, key=lambda x: x["rsi"])[:40]
+    # 優先挑選「雙支撐共振 (is_conf=True)」且 RSI 最低的標的
+    passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
     final_list = []
     for item in passed:
         net = check_inst_buy_5d(item["stock_id"])
@@ -145,7 +151,7 @@ def run_screener(stock_map):
             final_list.append(item)
     if not final_list:
         return []
-    return pd.DataFrame(final_list).sort_values(by=["rsi", "net_5d"], ascending=[True, False]).head(5).to_dict("records")
+    return pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(5).to_dict("records")
 
 def build_flex_message(today_str, holdings, top5):
     body = []
@@ -172,21 +178,22 @@ def build_flex_message(today_str, holdings, top5):
             ]})
         body.append({"type": "separator", "margin": "md"})
 
-    body.append({"type": "text", "text": "📉 黃金分割低接精選 TOP 5", "weight": "bold", "size": "sm", "color": "#1E3A8A", "margin": "md"})
+    body.append({"type": "text", "text": "📉 黃金分割＋季線共振低接 TOP 5", "weight": "bold", "size": "sm", "color": "#1E3A8A", "margin": "md"})
     if not top5:
         body.append({"type": "text", "text": "今日全市場無同時符合黃金分割支撐與法人買超之標的。", "size": "xs", "color": "#666666", "wrap": True, "margin": "sm"})
     else:
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的/法人", "size": "xs", "color": "#888888", "flex": 3},
-            {"type": "text", "text": "現價/支撐", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
+            {"type": "text", "text": "現價/支撐共振", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
             {"type": "text", "text": "賣點/雙重防守", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
         for s in top5:
             c = "#D32F2F" if s["pct"] >= 0 else "#2E7D32"
+            conf_tag = "🔥共振" if s["is_conf"] else ""
             body.append({"type": "box", "layout": "horizontal", "margin": "sm", "alignItems": "center", "contents": [
                 {"type": "box", "layout": "vertical", "flex": 3, "contents": [
-                    {"type": "text", "text": s["name"], "size": "xs", "weight": "bold"},
+                    {"type": "text", "text": f"{s['name']}{conf_tag}", "size": "xs", "weight": "bold"},
                     {"type": "text", "text": f"{s['stock_id']}(+{s['net_5d']}張)", "size": "xxs", "color": "#666666"}
                 ]},
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
@@ -206,7 +213,7 @@ def build_flex_message(today_str, holdings, top5):
             "type": "bubble", "size": "giga",
             "header": {"type": "box", "layout": "vertical", "backgroundColor": "#1E293B", "paddingAll": "14px", "contents": [
                 {"type": "text", "text": "📊 台股 AI 波段監控與選股", "color": "#FFFFFF", "weight": "bold", "size": "md"},
-                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割攻守＋季線保護", "color": "#94A3B8", "size": "xs", "margin": "xs"}
+                {"type": "text", "text": f"資料日期：{today_str} | 黃金分割＋季線雙支撐共振", "color": "#94A3B8", "size": "xs", "margin": "xs"}
             ]},
             "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body},
             "footer": {"type": "box", "layout": "vertical", "paddingAll": "10px", "contents": [
