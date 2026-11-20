@@ -2,7 +2,8 @@ name: Daily Taiwan Stock AI Scanner
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'
+    # UTC 09:00 = 台灣時間 17:00，每週一至週五執行
+    - cron: '0 9 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -24,4 +25,5 @@ jobs:
         env:
           LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
         run: python scanner_bot.py
