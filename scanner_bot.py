@@ -77,14 +77,22 @@ def monitor_holdings(stock_map):
             curr_c = float(close.iloc[-1])
             ma5, ma20, ma60 = float(close.rolling(5).mean().iloc[-1]), float(close.rolling(20).mean().iloc[-1]), float(close.rolling(60).mean().iloc[-1])
             rsi = float(calculate_rsi(close, 14).iloc[-1])
-            high_20d = float(df["High"].iloc[-20:].max())
+            h20 = float(df["High"].iloc[-20:].max())
+            h60, l60 = float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
+            swing = h60 - l60
+            fib_res_618 = l60 + swing * 0.618   # 黃金反彈壓力 (0.618)
+            fib_ext_1272 = l60 + swing * 1.272  # 黃金延伸目標 (1.272)
             pnl = ((curr_c - cost) / cost) * 100
+
             sigs = []
             if rsi >= 75: sigs.append("🔥RSI過熱高賣")
-            if curr_c >= high_20d * 0.985 and pnl > 2: sigs.append("🎯達前高停利")
+            if curr_c >= fib_ext_1272 * 0.985 and pnl > 5: sigs.append(f"🚀達黃金1.272({fib_ext_1272:.1f})")
+            elif abs(curr_c - fib_res_618) / fib_res_618 <= 0.015 and pnl > 2: sigs.append(f"📐達黃金0.618({fib_res_618:.1f})")
+            elif curr_c >= h20 * 0.985 and pnl > 2: sigs.append(f"🎯達前高({h20:.1f})")
             if pnl >= 3.0 and curr_c < ma5: sigs.append("📉破5日線停利")
             if curr_c < ma60 or pnl <= -7.0: sigs.append("🚨破季線/停損")
-            status = " / ".join(sigs) if sigs else f"✅續抱(月{ma20:.1f})"
+
+            status = " / ".join(sigs) if sigs else f"✅續抱(賣:{fib_res_618:.1f}/{fib_ext_1272:.1f})"
             results.append({"id": stock_id, "name": name, "cost": cost, "close": curr_c, "pnl": pnl, "status": status, "alert": len(sigs) > 0})
         except Exception:
             pass
@@ -135,11 +143,11 @@ def run_screener(stock_map):
 def build_flex_message(today_str, holdings, top5):
     body = []
     if holdings:
-        body.append({"type": "text", "text": "🔔 持股高賣與防守監控", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
+        body.append({"type": "text", "text": "🔔 持股黃金高賣與防守監控", "weight": "bold", "size": "sm", "color": "#1E3A8A"})
         body.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "text", "text": "標的", "size": "xs", "color": "#888888", "flex": 3},
             {"type": "text", "text": "成本➔現價", "size": "xs", "color": "#888888", "flex": 4, "align": "center"},
-            {"type": "text", "text": "損益/狀態", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
+            {"type": "text", "text": "損益/黃金賣點", "size": "xs", "color": "#888888", "flex": 4, "align": "end"},
         ]})
         body.append({"type": "separator", "margin": "xs"})
         for h in holdings:
