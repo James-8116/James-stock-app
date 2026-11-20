@@ -24,15 +24,16 @@ def calculate_rsi(series, period=14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-def check_fib_touch(curr_c, curr_l, h60, l60, tol=0.015):
+def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
     swing = h60 - l60
     if swing <= 0:
-        return None, 0.0, {}
+        return None, 0.0, {}, False
     fibs = {"0.382": h60 - swing * 0.382, "0.500": h60 - swing * 0.500, "0.618": h60 - swing * 0.618}
     for k, v in fibs.items():
         if abs(curr_c - v) / v <= tol or abs(curr_l - v) / v <= tol:
-            return k, v, fibs
-    return None, 0.0, fibs
+            is_conf = abs(v - ma60) / ma60 <= 0.025
+            return k, v, fibs, is_conf
+    return None, 0.0, fibs, False
 
 @st.cache_data(ttl=86400)
 def get_tw_stock_list(token):
@@ -106,6 +107,7 @@ with st.sidebar:
     min_price = st.number_input("最低股價 (元)", 10, 200, 15, 5)
     st.divider()
     req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
+    req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
     fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.0, 1.5, 0.5) / 100
     req_ma20 = st.checkbox("必須跌破 20 日月線", value=False)
     req_rebound = st.checkbox("必須當日止跌 (收紅K或RSI勾頭)", value=False)
@@ -116,7 +118,7 @@ with st.sidebar:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割低接全市場掃描"])
+tab1, tab2 = st.tabs(["🔔 持股黃金高賣與雙重防守", "📉 黃金分割＋季線共振低接掃描"])
 
 with tab1:
     st.subheader("📋 持股黃金高賣與雙重防守即時監控（輸入代號與成本按 Enter 自動更新）")
@@ -194,8 +196,8 @@ with tab2:
 
             if vol_ma5 < min_vol or curr_c < min_price or curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < min_pullback:
                 continue
-            fib_hit, fib_p, fib_dict = check_fib_touch(curr_c, curr_l, h60, l60, fib_tol)
-            if (req_fib and not fib_hit) or (req_ma20 and curr_c >= ma20) or curr_rsi >= rsi_limit:
+            fib_hit, fib_p, fib_dict, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, fib_tol)
+            if (req_fib and not fib_hit) or (req_conf_only and not is_conf) or (req_ma20 and curr_c >= ma20) or curr_rsi >= rsi_limit:
                 continue
             if req_rebound and not (curr_rsi >= prev_rsi or curr_c > curr_o):
                 continue
@@ -204,11 +206,11 @@ with tab2:
             info = stock_map[t]
             passed.append({
                 "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
-                "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict,
+                "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
                 "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20, "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100
             })
 
-        passed = sorted(passed, key=lambda x: x["rsi"])[:40]
+        passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
         final_list = []
         with st.spinner(f"技術面 {len(passed)} 檔過關，核對三大法人買賣超中..."):
             for item in passed:
@@ -219,11 +221,13 @@ with tab2:
                 final_list.append(item)
 
         if not final_list:
-            st.info("💡 目前條件無符合標的，請在左側放寬 RSI 上限或黃金分割誤差範圍。")
+            st.info("💡 目前條件無符合標的，請在左側放寬篩選條件。")
         else:
-            df_res = pd.DataFrame(final_list).sort_values(by=["rsi", "net_5d"], ascending=[True, False]).head(top_n)
+            df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi", "net_5d"], ascending=[False, True, False]).head(top_n)
             disp = pd.DataFrame({
-                "代號": df_res["stock_id"], "名稱": df_res["name"], "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
+                "代號": df_res["stock_id"],
+                "名稱": df_res.apply(lambda r: f"{r['name']} 🔥雙支撐" if r["is_conf"] else r["name"], axis=1),
+                "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
                 "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
                 "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r['fib_hit'] != "未觸及" else "未觸及", axis=1),
                 "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"), "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
@@ -236,7 +240,7 @@ with tab2:
             opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
             cdf = market_data[sel_row["ticker"]].copy().reset_index()
-            date_col = cdf.columns[0]
+            date_col = cdf.columns
             fibs = sel_row["fib_dict"]
             cdf["20日月線"] = cdf["Close"].rolling(20).mean()
             cdf["60日季線"] = cdf["Close"].rolling(60).mean()
@@ -250,7 +254,6 @@ with tab2:
                 color=alt.Color("指標:N", scale=alt.Scale(
                     domain=["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"],
                     range=["#E60000", "#FF8C00", "#008000", "#6B4C35", "#0055FF", "#D0006F"]
-
                 ))
             )
 
@@ -259,7 +262,7 @@ with tab2:
                 {"指標": "黃金 0.500", "價格": fibs["0.500"]},
                 {"指標": "黃金 0.618", "價格": fibs["0.618"]},
             ])
-            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=[5, 4], strokeWidth=1.2).encode(
+            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=, strokeWidth=1.6).encode(
                 y="價格:Q",
                 color=alt.Color("指標:N")
             )
