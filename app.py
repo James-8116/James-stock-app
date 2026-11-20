@@ -361,17 +361,18 @@ with tab1:
                 if curr_c < ma60:
                     sigs.append(f"🛡️空頭排列(季線壓力{ma60:.1f})")
 
-            rows_out.append({
-                "代號": code, "名稱": auto_name,
-                "成本": f"{cost:.2f}" if has_cost else "-",
+          rows_out.append({
+                "代號": code,
+                "名稱": auto_name,
                 "現價": f"{curr_c:.2f}",
-                "損益": f"{pnl:+.2f}%" if has_cost else "-",
-                "RSI": f"{rsi:.1f}",
                 "📐 合理回檔(0.500)": f"{fib_500:.2f}",
                 "📐 深度回檔(0.618)": f"{fib_618:.2f}",
                 "⚠️ 恐慌破底(1.272)": f"{fib_ext_1272:.2f}",
                 "🛡️ 雙重防守線": f"{dual_stop:.2f} ({stop_tag})",
                 "白話操作建議": " / ".join(sigs) if sigs else "✅ 走勢正常，續抱觀察",
+                "成本": f"{cost:.2f}" if has_cost else "-",
+                "損益": f"{pnl:+.2f}%" if has_cost else "-",
+                "RSI": f"{rsi:.1f}",
             })
         if rows_out:
             st.table(pd.DataFrame(rows_out).set_index("代號"))
