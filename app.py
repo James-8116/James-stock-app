@@ -38,7 +38,6 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.015):
 
 @st.cache_data(ttl=600)
 def get_twii_status(lookback_days=60):
-    """取得台灣加權指數 (^TWII) 多空狀態與可調週期黃金分割點位（支援 1.5 年資料算年線）"""
     try:
         df = yf.download("^TWII", period="18mo", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -204,7 +203,6 @@ with st.sidebar:
 
 st.title("📊 台股 AI 波段監控與選股看板")
 
-# 可調整週期的大盤多空溫度計（支援 60日一季 / 120日半年 / 240日一年）
 period_map = {"60日 (一季波段)": 60, "120日 (半年波段)": 120, "240日 (一年長線大底)": 240}
 sel_period = st.radio("🇹🇼 選擇大盤黃金分割計算週期：", list(period_map.keys()), horizontal=True)
 twii = get_twii_status(period_map[sel_period])
@@ -215,7 +213,7 @@ if twii:
     if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
         market_mood += " ｜ 🟢大盤超賣止跌勾頭"
     with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
-                m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("大盤現價 / RSI", f"{twii['close']:,.0f}", f"14日 RSI: {twii['rsi']:.1f}")
         m2.metric("🛡️ 中期生命線(季線)", f"{twii['ma60']:,.0f}", f"距季線 {((twii['close']-twii['ma60'])/twii['ma60'])*100:+.1f}%")
         m3.metric("🏛️ 長線牛熊線(年線)", f"{twii['ma240']:,.0f}", f"距年線 {((twii['close']-twii['ma240'])/twii['ma240'])*100:+.1f}%")
