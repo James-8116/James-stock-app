@@ -249,11 +249,18 @@ with tab2:
                 if r["is_rsi_hook"]: tags.append("🟢止跌反彈")
                 return f"{r['name']} {' '.join(tags)}".strip()
 
+            def format_buy_zone(r):
+                low_b = r["fib_price"] * 0.99
+                high_b = r["fib_price"]
+                status = "✅已到買區" if r["close"] <= high_b * 1.005 else "⏳等拉回"
+                return f"{low_b:.1f}~{high_b:.1f} ({status})"
+
             disp = pd.DataFrame({
                 "代號": df_res["stock_id"],
                 "名稱": df_res.apply(format_name, axis=1),
                 "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
                 "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
+                "🟢 建議低接買點": df_res.apply(format_buy_zone, axis=1),
                 "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r['fib_hit'] != "未觸及" else "未觸及", axis=1),
                 "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"), "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
                 "🟢 第一賣點(月線)": df_res.apply(lambda r: f"{r['ma20']:.1f} ({r['up_ma20']:+.1f}%)", axis=1),
@@ -293,4 +300,3 @@ with tab2:
             )
 
             st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
-
