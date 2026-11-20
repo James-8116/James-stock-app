@@ -4,6 +4,7 @@ import requests
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import altair as alt
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="台股 AI 波段監控與選股", page_icon="📊", layout="wide")
@@ -234,10 +235,32 @@ with tab2:
 
             opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
-            cdf = market_data[sel_row["ticker"]].copy()
+            cdf = market_data[sel_row["ticker"]].copy().reset_index()
+            date_col = cdf.columns[0]
             fibs = sel_row["fib_dict"]
-            cdf["20日月線"], cdf["60日季線"] = cdf["Close"].rolling(20).mean(), cdf["Close"].rolling(60).mean()
-            cdf["黃金 0.382"], cdf["黃金 0.500"], cdf["黃金 0.618"] = fibs["0.382"], fibs["0.500"], fibs["0.618"]
-            plot_df = cdf[["Close", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"]].tail(60)
-            plot_df.columns = ["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"]
-            st.line_chart(plot_df, color=["#FF4B4B", "#FFA500", "#00CC96", "#636EFA", "#AB63FA", "#19D3F3"])
+            cdf["20日月線"] = cdf["Close"].rolling(20).mean()
+            cdf["60日季線"] = cdf["Close"].rolling(60).mean()
+            cdf = cdf.tail(60)
+
+            main_df = cdf[[date_col, "Close", "20日月線", "60日季線"]].rename(columns={date_col: "日期", "Close": "收盤價"})
+            main_melt = main_df.melt("日期", var_name="指標", value_name="價格").dropna()
+            main_chart = alt.Chart(main_melt).mark_line(strokeWidth=2.2).encode(
+                x=alt.X("日期:T", title=""),
+                y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
+                color=alt.Color("指標:N", scale=alt.Scale(
+                    domain=["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"],
+                    range=["#FF4B4B", "#FFA500", "#00CC96", "#636EFA", "#AB63FA", "#19D3F3"]
+                ))
+            )
+
+            fib_df = pd.DataFrame([
+                {"指標": "黃金 0.382", "價格": fibs["0.382"]},
+                {"指標": "黃金 0.500", "價格": fibs["0.500"]},
+                {"指標": "黃金 0.618", "價格": fibs["0.618"]},
+            ])
+            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=[5, 4], strokeWidth=1.2).encode(
+                y="價格:Q",
+                color=alt.Color("指標:N")
+            )
+
+            st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
