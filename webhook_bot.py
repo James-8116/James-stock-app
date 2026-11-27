@@ -1,17 +1,91 @@
 import os
 import re
+import time
 import requests
 import yfinance as yf
 import pandas as pd
+from datetime import datetime, timedelta
 from flask import Flask, request
 
 app = Flask(__name__)
 
 # ================= 環境變數設定 =================
 LINE_TOKEN = "".join((os.environ.get("LINE_TOKEN") or "").split())
-FINMIND_TOKEN = (os.environ.get("FINMIND_TOKEN") or "").strip()
+FINMIND_TOKEN = "".join((os.environ.get("FINMIND_TOKEN") or "").split())
 FINMIND_URL = "https://api." + "://finmindtrade.com"
+TWSE_STOCK_URL = "https://openapi." + "twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 LINE_PUSH_URL = "https://api." + "line.me/v2/bot/message/push"
+
+# 記憶體快取中文股名對照表 (避免重複查詢)
+STOCK_NAME_CACHE = {}
+CACHE_EXPIRE_TS = 0
+
+
+def get_stock_name(stock_id):
+    global STOCK_NAME_CACHE, CACHE_EXPIRE_TS
+    now_ts = time.time()
+
+    # 若快取空了或超過 12 小時，重新載入完整台股中文名稱表
+    if not STOCK_NAME_CACHE or now_ts > CACHE_EXPIRE_TS:
+        temp_map = {}
+        # 方法 1：透過 FinMind 取得上市櫃中文名稱
+        if FINMIND_TOKEN:
+            try:
+                res = requests.get(
+                    FINMIND_URL,
+                    params={"dataset": "TaiwanStockInfo", "token": FINMIND_TOKEN},
+                    timeout=10
+                ).json()
+                if res.get("msg") == "success" and res.get("data"):
+                    for row in res["data"]:
+                        sid = str(row.get("stock_id", "")).strip()
+                        sname = str(row.get("stock_name", "")).strip()
+                        if sid and sname:
+                            temp_map[sid] = sname
+            except Exception:
+                pass
+
+        # 方法 2：透過證交所 OpenAPI 補充上市股票中文名稱
+        if not temp_map:
+            try:
+                rows = requests.get(TWSE_STOCK_URL, timeout=10).json()
+                for r in rows:
+                    sid = str(r.get("Code", "")).strip()
+                    sname = str(r.get("Name", "")).strip()
+                    if sid and sname:
+                        temp_map[sid] = sname
+            except Exception:
+                pass
+
+        if temp_map:
+            STOCK_NAME_CACHE = temp_map
+            CACHE_EXPIRE_TS = now_ts + 43200
+
+    return STOCK_NAME_CACHE.get(stock_id, stock_id)
+
+
+def check_inst_buy_5d(stock_id):
+    if not FINMIND_TOKEN:
+        return None
+    start = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
+    params = {
+        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "data_id": stock_id,
+        "start_date": start,
+        "token": FINMIND_TOKEN,
+    }
+    try:
+        res = requests.get(FINMIND_URL, params=params, timeout=8).json()
+        if res.get("msg") != "success" or not res.get("data"):
+            return 0
+        df = pd.DataFrame(res["data"])
+        df["net"] = df["buy"] - df["sell"]
+        recent = sorted(df["date"].unique())[-5:]
+        return int(round(df[df["date"].isin(recent)]["net"].sum() / 1000))
+    except Exception:
+        return None
+
+
 # ================= 指標與 V6 回測核心 =================
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -91,22 +165,6 @@ def run_v6_backtest(df):
         return 0, 0.0, 0.0
     wins = [t for t in trades if t > 0]
     return len(trades), len(wins) / len(trades) * 100, sum(trades) / len(trades)
-
-
-def get_stock_name(stock_id):
-    if not FINMIND_TOKEN:
-        return stock_id
-    try:
-        res = requests.get(
-            FINMIND_URL,
-            params={"dataset": "TaiwanStockInfo", "data_id": stock_id, "token": FINMIND_TOKEN},
-            timeout=5
-        ).json()
-        if res.get("msg") == "success" and res.get("data"):
-            return res["data"][-1]["stock_name"]
-    except Exception:
-        pass
-    return stock_id
 def analyze_single_stock_v6(stock_id):
     df = yf.download(f"{stock_id}.TW", period="2y", progress=False)
     if df.empty:
@@ -119,6 +177,8 @@ def analyze_single_stock_v6(stock_id):
         return None
 
     name = get_stock_name(stock_id)
+    inst_5d = check_inst_buy_5d(stock_id)
+
     close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
     curr_c, c_prev = float(close.iloc[-1]), float(close.iloc[-2])
     curr_o, curr_h, curr_l = float(open_p.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1])
@@ -153,18 +213,38 @@ def analyze_single_stock_v6(stock_id):
     trail_ref = max(ma20, curr_c - 2.2 * curr_atr)
     bt_cnt, bt_win, bt_ret = run_v6_backtest(df)
 
+    # 產生白話買賣價格建議
+    if is_v6_pass:
+        action_summary = "🔥 強勢突破點火！可於現價附近順勢進場。"
+        buy_advice = f"{curr_c * 0.995:.1f} ~ {curr_c * 1.01:.1f} 元（突破確認區）"
+        sell_advice = f"看漲不設限，跌破 {trail_ref:.1f} 元再移動停利"
+        stop_advice = f"跌破 {init_stop:.1f} 元（今日低點/ATR防線）嚴格停損"
+    elif curr_c > ma60 and ma60_slope >= 0:
+        action_summary = "⏳ 多頭整理中，尚未帶量過高，建議先等突破再追。"
+        buy_advice = f"等帶量站上 {prev_20d_high:.1f} 元（突破頸線）再進場"
+        sell_advice = f"若成功突破，波段上看 {prev_20d_high * 1.09:.1f} 元（+9%）"
+        stop_advice = f"若持有，跌破季線 {ma60:.1f} 元建議減碼停損"
+    else:
+        action_summary = "🛡️ 均線偏弱或震盪過大，暫不建議進場追高。"
+        buy_advice = f"暫不買進（需先站回月線 {ma20:.1f} 且過前高 {prev_20d_high:.1f}）"
+        sell_advice = f"手中若有持股，反彈靠近月線 {ma20:.1f} 元可先調節"
+        stop_advice = f"跌破近期支撐 {init_stop:.1f} 元務必嚴格停損"
+
     return {
-        "id": stock_id, "name": name, "close": curr_c, "pct": pct_chg,
-        "rsi": rsi, "vol_ratio": vol_ratio, "box_range": box_range, "ma60_slope": ma60_slope,
+        "id": stock_id, "name": name, "inst_5d": inst_5d,
+        "close": curr_c, "pct": pct_chg, "rsi": rsi,
+        "vol_ratio": vol_ratio, "box_range": box_range, "ma60_slope": ma60_slope,
         "break_lvl": prev_20d_high, "init_stop": init_stop, "trail_ref": trail_ref,
         "c1": c1_trend, "c2": c2_box, "c3": c3_clean_k, "c4": c4_break,
-        "is_pass": is_v6_pass, "bt_cnt": bt_cnt, "bt_win": bt_win, "bt_ret": bt_ret
+        "is_pass": is_v6_pass, "bt_cnt": bt_cnt, "bt_win": bt_win, "bt_ret": bt_ret,
+        "action_summary": action_summary,
+        "buy_advice": buy_advice, "sell_advice": sell_advice, "stop_advice": stop_advice
     }
 
 
 def build_stock_reply_card(s):
     header_bg = "#B91C1C" if s["is_pass"] else "#1E293B"
-    status_title = "🚀 符合 V6 精準突破買點！" if s["is_pass"] else "🔍 V6 條件診斷報告 (尚未全數達標)"
+    status_title = "🚀 符合 V6 精準突破買點！" if s["is_pass"] else "🔍 V6 個股診斷與操作建議"
     pct_sign = "+" if s["pct"] >= 0 else ""
 
     if s["bt_cnt"] > 0:
@@ -173,40 +253,59 @@ def build_stock_reply_card(s):
     else:
         bt_text = "過去 2 年無完全吻合之突破紀錄"
 
+    if s["inst_5d"] is not None:
+        inst_sign = "+" if s["inst_5d"] > 0 else ""
+        inst_color = "#D32F2F" if s["inst_5d"] > 0 else ("#2E7D32" if s["inst_5d"] < 0 else "#475569")
+        inst_text = f"近5日三大法人：{inst_sign}{s['inst_5d']:,} 張"
+    else:
+        inst_color = "#475569"
+        inst_text = "近5日三大法人：暫無數據"
+
     check_icon = lambda ok: "✅" if ok else "❌"
 
     bubble = {
         "type": "bubble",
+        "size": "mega",
         "header": {
-            "type": "box", "layout": "vertical", "backgroundColor": header_bg, "paddingAll": "14px",
+            "type": "box", "layout": "vertical", "backgroundColor": header_bg, "paddingAll": "16px",
             "contents": [
-                {"type": "text", "text": status_title, "color": "#FDE047" if s["is_pass"] else "#93C5FD", "size": "xs", "weight": "bold"},
-                {"type": "text", "text": f"{s['id']} {s['name']}", "color": "#FFFFFF", "size": "xl", "weight": "bold", "margin": "xs"},
-                {"type": "text", "text": f"現價：{s['close']:.2f} ({pct_sign}{s['pct']:.2f}%) ｜ RSI：{s['rsi']:.1f}", "color": "#F1F5F9", "size": "sm", "margin": "xs"},
+                {"type": "text", "text": status_title, "color": "#FDE047" if s["is_pass"] else "#93C5FD", "size": "sm", "weight": "bold"},
+                {"type": "text", "text": f"{s['id']} {s['name']}", "color": "#FFFFFF", "size": "xxl", "weight": "bold", "margin": "xs"},
+                {"type": "text", "text": f"現價：{s['close']:.2f} ({pct_sign}{s['pct']:.2f}%) ｜ RSI：{s['rsi']:.1f}", "color": "#F1F5F9", "size": "md", "margin": "xs"},
             ]
         },
         "body": {
-            "type": "box", "layout": "vertical", "paddingAll": "14px",
+            "type": "box", "layout": "vertical", "paddingAll": "16px",
             "contents": [
-                {"type": "text", "text": f"📊 {bt_text}", "size": "xs", "weight": "bold", "color": "#1E3A8A"},
+                # 1. 籌碼與歷史回測摘要
+                {"type": "text", "text": f"🏦 {inst_text}", "size": "sm", "weight": "bold", "color": inst_color},
+                {"type": "text", "text": f"📊 {bt_text}", "size": "sm", "weight": "bold", "color": "#1E3A8A", "margin": "xs"},
+
                 {"type": "separator", "margin": "md"},
-                {"type": "text", "text": f"{check_icon(s['c1'])} 四線多頭＋季線斜率 ({s['ma60_slope']:+.1f}% / 需>=2.5%)", "size": "xs", "margin": "md", "color": "#334155"},
-                {"type": "text", "text": f"{check_icon(s['c2'])} 前5日箱型壓縮震幅 ({s['box_range']:.1f}% / 需<=8.5%)", "size": "xs", "margin": "xs", "color": "#334155"},
-                {"type": "text", "text": f"{check_icon(s['c3'])} 實體飽滿紅K防隔日沖 (漲幅2~8%無長上影)", "size": "xs", "margin": "xs", "color": "#334155"},
-                {"type": "text", "text": f"{check_icon(s['c4'])} 突破20日高 {s['break_lvl']:.1f} ＋ 出量 ({s['vol_ratio']:.1f}x)", "size": "xs", "margin": "xs", "color": "#334155"},
-                {"type": "separator", "margin": "md"},
+
+                # 2. 白話買賣價格建議區塊 (放大字體)
                 {
-                    "type": "box", "layout": "horizontal", "margin": "md", "backgroundColor": "#F8FAFC", "paddingAll": "8px", "cornerRadius": "6px",
+                    "type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8FAFC", "paddingAll": "12px", "cornerRadius": "8px",
                     "contents": [
-                        {"type": "text", "text": f"突破頸線\n{s['break_lvl']:.1f}", "size": "xs", "color": "#334155", "align": "center", "wrap": True},
-                        {"type": "text", "text": f"初始硬停損\n{s['init_stop']:.1f}", "size": "xs", "color": "#15803D", "weight": "bold", "align": "center", "wrap": True},
-                        {"type": "text", "text": f"ATR移動停利\n{s['trail_ref']:.1f}", "size": "xs", "color": "#B91C1C", "weight": "bold", "align": "center", "wrap": True},
+                        {"type": "text", "text": s["action_summary"], "size": "md", "weight": "bold", "color": "#0F172A", "wrap": True},
+                        {"type": "text", "text": f"🟢 買進：{s['buy_advice']}", "size": "sm", "color": "#1E40AF", "weight": "bold", "margin": "md", "wrap": True},
+                        {"type": "text", "text": f"🔴 停利：{s['sell_advice']}", "size": "sm", "color": "#B91C1C", "weight": "bold", "margin": "sm", "wrap": True},
+                        {"type": "text", "text": f"🛡️ 停損：{s['stop_advice']}", "size": "sm", "color": "#15803D", "weight": "bold", "margin": "sm", "wrap": True},
                     ]
-                }
+                },
+
+                {"type": "separator", "margin": "lg"},
+
+                # 3. 放在下方的 V6 條件診斷細則 (放大字體)
+                {"type": "text", "text": "📋 V6 突破條件檢核明細：", "size": "sm", "weight": "bold", "color": "#475569", "margin": "md"},
+                {"type": "text", "text": f"{check_icon(s['c1'])} 四線多頭＋季線斜率 ({s['ma60_slope']:+.1f}% / 需>=2.5%)", "size": "sm", "margin": "sm", "color": "#334155", "wrap": True},
+                {"type": "text", "text": f"{check_icon(s['c2'])} 前5日箱型壓縮震幅 ({s['box_range']:.1f}% / 需<=8.5%)", "size": "sm", "margin": "xs", "color": "#334155", "wrap": True},
+                {"type": "text", "text": f"{check_icon(s['c3'])} 實體飽滿紅K防隔日沖 (漲幅2~8%無長上影)", "size": "sm", "margin": "xs", "color": "#334155", "wrap": True},
+                {"type": "text", "text": f"{check_icon(s['c4'])} 突破20日高 {s['break_lvl']:.1f} ＋ 出量 ({s['vol_ratio']:.1f}x)", "size": "sm", "margin": "xs", "color": "#334155", "wrap": True},
             ]
         }
     }
-    return {"type": "flex", "altText": f"{s['id']} {s['name']} V6 診斷結果", "contents": bubble}
+    return {"type": "flex", "altText": f"{s['id']} {s['name']} V6 診斷與買賣建議", "contents": bubble}
 
 
 @app.route("/callback", methods=["POST"])
