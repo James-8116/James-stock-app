@@ -8,12 +8,10 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # ================= 環境變數設定 =================
-LINE_TOKEN = (os.environ.get("LINE_TOKEN") or "").strip()
+LINE_TOKEN = "".join((os.environ.get("LINE_TOKEN") or "").split())
 FINMIND_TOKEN = (os.environ.get("FINMIND_TOKEN") or "").strip()
-FINMIND_URL = "https://finmindtrade.com"
-LINE_PUSH_URL = "https://line.me"
-
-
+FINMIND_URL = "https://api." + "://finmindtrade.com"
+LINE_PUSH_URL = "https://api." + "line.me/v2/bot/message/push"
 # ================= 指標與 V6 回測核心 =================
 def calculate_rsi(series, period=14):
     delta = series.diff()
