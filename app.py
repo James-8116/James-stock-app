@@ -8,7 +8,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime, timedelta, timezone
 
-st.set_page_config(page_title="台股 AI 波段監控與選股", page_icon="📊", layout="wide")
+st.set_page_config(page_title="台股 AI 波段監控與精準突破選股", page_icon="🚀", layout="wide")
 
 st.markdown("""
 <style>
@@ -62,77 +62,78 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 
-def calculate_kd(df, period=9):
-    low_min = df["Low"].rolling(period).min()
-    high_max = df["High"].rolling(period).max()
-    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
-    k = rsv.ewm(com=2, adjust=False).mean()
-    d = k.ewm(com=2, adjust=False).mean()
-    return k, d
+def calculate_atr(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
+    return tr.rolling(period).mean()
 
 
-def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.025):
-    swing = h60 - l60
-    if swing <= 0:
-        return None, 0.0, {}, False
-    fibs = {"0.382": h60 - swing * 0.382, "0.500": h60 - swing * 0.500, "0.618": h60 - swing * 0.618}
-    for k, v in fibs.items():
-        if abs(curr_c - v) / v <= tol or abs(curr_l - v) / v <= tol:
-            is_conf = abs(v - ma60) / ma60 <= 0.025
-            return k, v, fibs, is_conf
-    return None, 0.0, fibs, False
-
-
-def run_quick_backtest(df):
-    """2年歷史回測引擎 (含隔日跳空滑價修正)"""
-    if len(df) < 120:
+def run_v6_backtest(df):
+    """V6 精準突破 2 年回測引擎 (含隔日跳空滑價與 0.5% 稅費修正)"""
+    if len(df) < 130:
         return 0, 0.0, 0.0
+
     close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
-    ma20, ma60 = close.rolling(20).mean(), close.rolling(60).mean()
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+    ma120 = close.rolling(120).mean()
     vol_ma5 = vol.rolling(5).mean()
     rsi = calculate_rsi(close, 14)
-    k, d = calculate_kd(df, 9)
+    atr = calculate_atr(df, 14)
 
     trades = []
-    in_pos, entry_p, stop_p, target_p = False, 0.0, 0.0, 0.0
+    in_pos, entry_p, stop_p, highest_p = False, 0.0, 0.0, 0.0
+    fee = 0.005
 
-    for i in range(65, len(df) - 1):
+    for i in range(122, len(df) - 1):
         c, o, l, h = float(close.iloc[i]), float(open_p.iloc[i]), float(low.iloc[i]), float(high.iloc[i])
-        v, v_prev, v_ma5 = float(vol.iloc[i]), float(vol.iloc[i - 1]), float(vol_ma5.iloc[i - 1])
-        m20, m60 = float(ma20.iloc[i]), float(ma60.iloc[i])
-        m60_prev = float(ma60.iloc[i - 5])
+        c_prev = float(close.iloc[i - 1])
+        v, v_ma5 = float(vol.iloc[i]), float(vol_ma5.iloc[i])
+        m20, m60, m120 = float(ma20.iloc[i]), float(ma60.iloc[i]), float(ma120.iloc[i])
+        m60_20d_ago = float(ma60.iloc[i - 20])
         r = float(rsi.iloc[i])
-        k_now, d_now = float(k.iloc[i]), float(d.iloc[i])
-        k_prev, d_prev = float(k.iloc[i - 1]), float(d.iloc[i - 1])
-        h20 = float(high.iloc[i - 20 : i].max())
-        h60, l60 = float(high.iloc[i - 60 : i].max()), float(low.iloc[i - 60 : i].min())
-        swing = h60 - l60
+        curr_atr = float(atr.iloc[i])
+
+        if pd.isna(curr_atr) or m60_20d_ago <= 0:
+            continue
+
+        prev_20d_high = float(close.iloc[i - 20 : i].max())
+        box_h = float(high.iloc[i - 5 : i].max())
+        box_l = float(low.iloc[i - 5 : i].min())
+        box_range = (box_h - box_l) / box_l if box_l > 0 else 1.0
 
         if not in_pos:
-            is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
-            is_smart_money = (v_prev < v_ma5) and (c > o) and (v > v_prev * 1.2)
-            if (
-                c > m60 and m60 > m60_prev
-                and ((h20 - c) / h20) >= 0.03
-                and (38 <= r <= 52)
-                and is_kd_gold and is_smart_money and swing > 0
-            ):
-                fibs = [h60 - swing * ratio for ratio in (0.382, 0.500, 0.618)]
-                if any(abs(c - f) / f <= 0.025 or abs(l - f) / f <= 0.025 for f in fibs):
-                    struct_stop = max(m60, h60 - swing * 0.786)
-                    if (c - struct_stop) / c <= 0.065:
-                        in_pos = True
-                        entry_p = c
-                        stop_p = max(struct_stop, c * 0.94)
-                        target_p = m20
+            is_strong_trend = (c > m20 > m60 > m120) and ((m60 - m60_20d_ago) / m60_20d_ago >= 0.025)
+            is_tight_box = box_range <= 0.085
+            body = c - o
+            upper_shadow = h - c
+            pct_chg = (c - c_prev) / c_prev
+            is_clean_breakout = (
+                (c > prev_20d_high)
+                and (body > 0)
+                and (upper_shadow <= body * 0.35)
+                and (0.02 <= pct_chg <= 0.08)
+                and (v > v_ma5 * 1.25)
+                and (55 <= r <= 73)
+            )
+            if is_strong_trend and is_tight_box and is_clean_breakout:
+                in_pos = True
+                entry_p = c
+                highest_p = c
+                stop_p = max(l * 0.99, c - 1.8 * curr_atr, c * 0.945)
         else:
-            if l <= stop_p:
-                exit_p = min(o, stop_p)
-                trades.append((exit_p - entry_p) / entry_p * 100)
+            highest_p = max(highest_p, h)
+            trailing_stop = max(stop_p, highest_p - 2.2 * curr_atr)
+            if l <= trailing_stop:
+                exit_p = min(o, trailing_stop)
+                trades.append(((exit_p - entry_p) / entry_p - fee) * 100)
                 in_pos = False
-            elif h >= target_p:
-                exit_p = max(o, target_p)
-                trades.append((exit_p - entry_p) / entry_p * 100)
+            elif c < m20:
+                trades.append(((c - entry_p) / entry_p - fee) * 100)
                 in_pos = False
 
     if not trades:
@@ -258,7 +259,7 @@ def get_top5_institutional(token, tech_only=True):
 def download_all_market_data(tickers):
     all_dfs = {}
     batch_size = 200
-    bar = st.progress(0, text="下載 2 年日 K 線（供即時掃描與歷史回測）...")
+    bar = st.progress(0, text="下載 2 年日 K 線（供即時突破掃描與 V6 歷史回測）...")
     total = (len(tickers) + batch_size - 1) // batch_size
     for idx, i in enumerate(range(0, len(tickers), batch_size)):
         batch = tickers[i:i + batch_size]
@@ -267,7 +268,7 @@ def download_all_market_data(tickers):
             for t in batch:
                 if t in data.columns.get_level_values(0):
                     df = data[t].dropna(subset=["Close", "Volume"])
-                    if len(df) >= 66:
+                    if len(df) >= 125:
                         all_dfs[t] = df
         except Exception:
             pass
@@ -317,27 +318,23 @@ with st.sidebar:
     auto_refresh = st.toggle("🟢 開啟盤中即時自動更新 (60秒)", value=True)
     refresh_sec = 60 if auto_refresh else None
     st.divider()
-    st.header("🎯 選股池與參數微調")
+    st.header("🚀 V6 精準突破參數微調")
     only_tech = st.toggle("💻 鎖定電子 / AI / 半導體族群 (與LINE同步)", value=True)
-    rsi_min, rsi_max = st.slider("14日 RSI 強勢回檔區間", 25, 65, (38, 52), 1)
-    min_pullback = st.slider("距20日高點至少回檔 (%)", 1, 20, 3, 1)
+    rsi_min, rsi_max = st.slider("14日 RSI 強勢攻擊區間", 45, 80, (55, 73), 1)
+    max_box_pct = st.slider("突破前 5 日箱型最大震幅 (%)", 4.0, 15.0, 8.5, 0.5) / 100
+    min_ma60_slope = st.slider("季線近 20 日最低上揚幅度 (%)", 0.0, 6.0, 2.5, 0.5) / 100
+    min_vol_ratio = st.slider("突破當日最低爆量倍數 (vs 5日均量)", 1.0, 2.5, 1.25, 0.05)
     min_vol = st.number_input("5日均量下限 (張)", 300, 10000, 1000, 100)
     min_price = st.number_input("最低股價 (元)", 10, 200, 20, 5)
     st.divider()
-    req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
-    req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
-    fib_tol = st.slider("黃金分割誤差範圍 (±%)", 0.5, 3.5, 2.5, 0.5) / 100
-    req_ma60_up = st.checkbox("強制季線斜率向上 (避免頭部下彎)", value=True)
-    req_kd_gold = st.checkbox("⚡ 強制 9 日 KD 低檔黃金交叉 (K < 45)", value=True)
-    req_smart_vol = st.checkbox("💰 強制主力縮量洗盤後紅K出量攻擊", value=True)
-    max_stop_pct = st.slider("最大停損空間上限 (%)", 3.0, 12.0, 6.5, 0.5) / 100
-    req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=False)
+    req_clean_k = st.checkbox("🛡️ 防隔日沖濾網 (上影線 <= 實體35%)", value=True)
+    req_inst = st.checkbox("🏦 強制近 5 日三大法人買超 > 0", value=False)
     top_n = st.slider("顯示精選檔數 (TOP N)", 3, 15, 10)
     st.divider()
     if not FINMIND_TOKEN:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
-st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 電子/AI 主力洗盤出量＋KD金叉 TOP 10"])
+st.title("🚀 台股 AI 波段監控與 V6 精準突破選股看板")
+tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "🚀 V6 電子/AI 箱型蓄勢帶量突破 TOP 10"])
 
 period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
 sel_twii_period = st.radio("🇹🇼 選擇【大盤】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="twii_period_radio")
@@ -353,7 +350,7 @@ def render_live_market_panel(days):
 
     if twii:
         is_bull = twii["close"] > twii["ma60"]
-        market_mood = "🟢 季線之上（偏多操作，可正常低接）" if is_bull else "🚨 跌破季線（空頭修正，縮小試單）"
+        market_mood = "🟢 季線之上（多頭順風，啟動 V6 強勢突破策略）" if is_bull else "🚨 跌破季線（空頭修正，嚴禁追高突破）"
         if twii["rsi"] < 35 and twii["rsi"] > twii["prev_rsi"]:
             market_mood += " ｜ 🟢大盤超賣止跌勾頭"
         with st.expander(f"🇹🇼 台灣加權指數 (^TWII)：{twii['close']:,.0f} ({twii['diff']:+,.0f} / {twii['pct']:+.2f}%) ｜ {market_mood}", expanded=True):
@@ -468,7 +465,7 @@ with tab2:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
         st.stop()
     b1, b2 = st.columns(2)
-    run_scan = b1.button("🚀 開始電子/AI 高勝率 TOP 10 掃描", type="primary", use_container_width=True)
+    run_scan = b1.button("🚀 開始 V6 電子/AI 精準突破 TOP 10 掃描", type="primary", use_container_width=True)
     force_refresh = b2.button("🔄 強制重抓最新報價", use_container_width=True)
     if force_refresh:
         download_all_market_data.clear()
@@ -486,113 +483,123 @@ with tab2:
         for t, df in market_data.items():
             if t not in stock_map:
                 continue
-            close, open_p, low_p, vol = df["Close"], df["Open"], df["Low"], df["Volume"]
+            close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
             vol_ma5_s = (vol / 1000).rolling(5).mean()
-            vol_ma5, vol_ma5_prev = float(vol_ma5_s.iloc[-1]), float(vol_ma5_s.iloc[-2])
-            curr_v, prev_v = float(vol.iloc[-1]) / 1000, float(vol.iloc[-2]) / 1000
+            vol_ma5 = float(vol_ma5_s.iloc[-1])
+            curr_v = float(vol.iloc[-1]) / 1000
+            curr_c = float(close.iloc[-1])
+
+            if vol_ma5 < min_vol or curr_c < min_price:
+                continue
 
             ma20 = float(close.rolling(20).mean().iloc[-1])
             ma60_s = close.rolling(60).mean()
-            ma60, ma60_5d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-6])
-            rsi = calculate_rsi(close, 14)
-            k_s, d_s = calculate_kd(df, 9)
-            k_now, d_now = float(k_s.iloc[-1]), float(d_s.iloc[-1])
-            k_prev, d_prev = float(k_s.iloc[-2]), float(d_s.iloc[-2])
+            ma60, ma60_20d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-21])
+            ma120 = float(close.rolling(120).mean().iloc[-1])
+            curr_rsi = float(calculate_rsi(close, 14).iloc[-1])
+            curr_atr = float(calculate_atr(df, 14).iloc[-1])
 
-            curr_c, prev_c, curr_o, curr_l = float(close.iloc[-1]), float(close.iloc[-2]), float(open_p.iloc[-1]), float(low_p.iloc[-1])
-            curr_rsi = float(rsi.iloc[-1])
-            h20, h60, l60 = float(df["High"].iloc[-20:].max()), float(df["High"].iloc[-60:].max()), float(df["Low"].iloc[-60:].min())
-
-            if vol_ma5 < min_vol or curr_c < min_price or curr_c <= ma60 or ((h20 - curr_c) / h20) * 100 < min_pullback:
-                continue
-            if req_ma60_up and ma60 <= ma60_5d_ago:
-                continue
-            if not (rsi_min <= curr_rsi <= rsi_max):
-                continue
-            is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
-            if req_kd_gold and not is_kd_gold:
-                continue
-            is_smart_money = (prev_v < vol_ma5_prev) and (curr_c > curr_o) and (curr_v > prev_v * 1.2)
-            if req_smart_vol and not is_smart_money:
+            if pd.isna(curr_atr) or ma60_20d_ago <= 0:
                 continue
 
-            swing = h60 - l60
-            struct_stop = max(ma60, h60 - swing * 0.786)
-            if (curr_c - struct_stop) / curr_c > max_stop_pct:
+            c_prev = float(close.iloc[-2])
+            curr_o, curr_h, curr_l = float(open_p.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1])
+            prev_20d_high = float(close.iloc[-21:-1].max())
+            box_h = float(high.iloc[-6:-1].max())
+            box_l = float(low.iloc[-6:-1].min())
+            box_range = (box_h - box_l) / box_l if box_l > 0 else 1.0
+
+            # 1. 四線多頭排列 + 季線強斜率
+            if not ((curr_c > ma20 > ma60 > ma120) and ((ma60 - ma60_20d_ago) / ma60_20d_ago >= min_ma60_slope)):
                 continue
-            fib_hit, fib_p, fib_dict, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, fib_tol)
-            if (req_fib and not fib_hit) or (req_conf_only and not is_conf):
+            # 2. 箱型壓縮蓄勢
+            if box_range > max_box_pct:
+                continue
+            # 3. 突破20日收盤新高 + 出量 + RSI強勢區
+            body = curr_c - curr_o
+            upper_shadow = curr_h - curr_c
+            pct_chg = (curr_c - c_prev) / c_prev
+            if not (curr_c > prev_20d_high and body > 0 and (0.02 <= pct_chg <= 0.08) and curr_v > vol_ma5 * min_vol_ratio and (rsi_min <= curr_rsi <= rsi_max)):
+                continue
+            if req_clean_k and upper_shadow > body * 0.35:
                 continue
 
-            dual_stop = max(struct_stop, curr_c * (1 - max_stop_pct))
-            bt_cnt, bt_win, bt_ret = run_quick_backtest(df)
+            init_stop = max(curr_l * 0.99, curr_c - 1.8 * curr_atr, curr_c * 0.945)
+            trail_ref = max(ma20, curr_c - 2.2 * curr_atr)
+            bt_cnt, bt_win, bt_ret = run_v6_backtest(df)
             info = stock_map[t]
+
             passed.append({
                 "ticker": t, "stock_id": info["id"], "name": info["name"],
                 "industry": info["industry"].replace("業", "").replace("設備", ""),
-                "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
-                "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
-                "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
-                "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100,
+                "close": curr_c, "pct": pct_chg * 100, "rsi": curr_rsi,
+                "break_lvl": prev_20d_high, "init_stop": init_stop, "trail_ref": trail_ref,
+                "box_pct": box_range * 100, "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0,
                 "bt_cnt": bt_cnt, "bt_win": bt_win, "bt_ret": bt_ret,
-                "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0,
             })
 
-        passed = sorted(passed, key=lambda x: (not x["is_conf"], -x["bt_win"], x["rsi"]))[:25]
+        passed = sorted(passed, key=lambda x: (-x["bt_ret"], -x["vol_ratio"]))[:25]
         final_list = []
-        with st.spinner(f"技術與主力條件 {len(passed)} 檔過關，核對三大法人數據並計算綜合評分中..."):
+        with st.spinner(f"V6 技術突破條件 {len(passed)} 檔過關，核對三大法人數據並計算綜合評分中..."):
             for item in passed:
                 net = check_inst_buy_5d(item["stock_id"], FINMIND_TOKEN)
                 if req_inst and net <= 0:
                     continue
                 item["net_5d"] = int(net)
                 score = 0
-                if item["is_conf"]:
-                    score += 30
                 if item["net_5d"] > 0:
-                    score += min(25, item["net_5d"] / 100)
-                if item["bt_cnt"] >= 2 and item["bt_win"] >= 60:
-                    score += 25
-                score += min(20, item["vol_ratio"] * 8)
+                    score += min(35, item["net_5d"] / 80)
+                if item["bt_cnt"] >= 1 and item["bt_ret"] > 0:
+                    score += min(35, 15 + item["bt_ret"] * 2)
+                score += min(30, item["vol_ratio"] * 12)
                 item["score"] = round(score, 1)
                 final_list.append(item)
 
         if not final_list:
-            st.info("💡 目前條件較嚴格（寧缺勿濫），暫無符合標的，可在左側適度放寬開關。")
+            st.info("💡 今日無符合 V6「箱型蓄勢＋實體飽滿帶量突破」之標的（寧缺勿濫），可在左側適度放寬開關。")
         else:
             df_res = pd.DataFrame(final_list).sort_values(by=["score"], ascending=False).head(top_n)
-            format_name = lambda r: f"{r['name']} ({r['industry']}) {'🔥雙支撐' if r['is_conf'] else '⚡金叉'}".strip()
-            format_buy = lambda r: f"{r['fib_price']*0.99:.1f}~{r['fib_price']:.1f} ({'✅買區' if r['close'] <= r['fib_price']*1.005 else '⏳等拉回'})"
-            format_bt = lambda r: f"{r['bt_win']:.0f}% ({r['bt_cnt']}次 / 均{r['bt_ret']:+.1f}%)" if r["bt_cnt"] > 0 else "首現訊號"
+            format_name = lambda r: f"{r['name']} ({r['industry']}) 🚀{r['vol_ratio']:.1f}x量"
+            format_bt = lambda r: f"{r['bt_win']:.0f}% ({r['bt_cnt']}次 / 均{r['bt_ret']:+.1f}%)" if r["bt_cnt"] > 0 else "2年首現突破"
 
             disp = pd.DataFrame({
-                "代號": df_res["stock_id"], "名稱/族群": df_res.apply(format_name, axis=1),
-                "現價": df_res["close"].map(lambda x: f"{x:.1f}"), "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
-                "📊 2年回測勝率": df_res.apply(format_bt, axis=1),
+                "代號": df_res["stock_id"],
+                "名稱/族群": df_res.apply(format_name, axis=1),
+                "現價": df_res["close"].map(lambda x: f"{x:.1f}"),
+                "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
+                "📊 V6回測(勝率/均報)": df_res.apply(format_bt, axis=1),
                 "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
-                "🟢 建議低接買點": df_res.apply(format_buy, axis=1),
-                "🟢 第一賣點(月線)": df_res.apply(lambda r: f"{r['ma20']:.1f} ({r['up_ma20']:+.1f}%)", axis=1),
-                "🔴 第二賣點(前高)": df_res.apply(lambda r: f"{r['high_20d']:.1f} (+{r['up_high']:.1f}%)", axis=1),
-                "🛡️ 雙重停損": df_res["dual_stop"].map(lambda x: f"{x:.1f}"),
+                "🎯 20日突破頸線": df_res["break_lvl"].map(lambda x: f"{x:.1f}"),
+                "🛡️ 初始硬停損": df_res["init_stop"].map(lambda x: f"{x:.1f}"),
+                "📈 ATR移動停利線": df_res["trail_ref"].map(lambda x: f"{x:.1f}"),
+                "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"),
             })
             st.table(disp.set_index("代號"))
 
-            opts = [f"#{i+1} {r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']} / 勝率 {r['bt_win']:.0f}%）" for i, (_, r) in enumerate(df_res.iterrows())]
-            sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
+            opts = [f"#{i+1} {r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 均報 {r['bt_ret']:+.1f}%）" for i, (_, r) in enumerate(df_res.iterrows())]
+            sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視 V6 突破標的走勢：", opts))]
             cdf = market_data[sel_row["ticker"]].copy().reset_index()
             date_col = cdf.columns[0]
-            fibs = sel_row["fib_dict"]
-            cdf["20日月線"], cdf["60日季線"] = cdf["Close"].rolling(20).mean(), cdf["Close"].rolling(60).mean()
+            cdf["20日月線"] = cdf["Close"].rolling(20).mean()
+            cdf["60日季線"] = cdf["Close"].rolling(60).mean()
             cdf = cdf.tail(60)
 
             main_melt = cdf[[date_col, "Close", "20日月線", "60日季線"]].rename(columns={date_col: "日期", "Close": "收盤價"}).melt("日期", var_name="指標", value_name="價格").dropna()
             main_chart = alt.Chart(main_melt).mark_line(strokeWidth=2.2).encode(
-                x=alt.X("日期:T", title=""), y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
+                x=alt.X("日期:T", title=""),
+                y=alt.Y("價格:Q", scale=alt.Scale(zero=False), title="價格"),
                 color=alt.Color("指標:N", scale=alt.Scale(
-                    domain=["收盤價", "20日月線", "60日季線", "黃金 0.382", "黃金 0.500", "黃金 0.618"],
-                    range=["#E60000", "#FF8C00", "#008000", "#6B4C35", "#0055FF", "#D0006F"],
+                    domain=["收盤價", "20日月線", "60日季線", "20日突破頸線", "初始硬停損", "ATR移動停利"],
+                    range=["#E60000", "#FF8C00", "#008000", "#0055FF", "#15803D", "#9333EA"],
                 )),
             )
-            fib_df = pd.DataFrame([{"指標": f"黃金 {k}", "價格": fibs[k]} for k in ["0.382", "0.500", "0.618"]])
-            fib_chart = alt.Chart(fib_df).mark_rule(strokeDash=[5, 5], strokeWidth=1.6).encode(y="價格:Q", color=alt.Color("指標:N"))
-            st.altair_chart((main_chart + fib_chart).interactive(), use_container_width=True)
+            lvl_df = pd.DataFrame([
+                {"指標": "20日突破頸線", "價格": sel_row["break_lvl"]},
+                {"指標": "初始硬停損", "價格": sel_row["init_stop"]},
+                {"指標": "ATR移動停利", "價格": sel_row["trail_ref"]},
+            ])
+            lvl_chart = alt.Chart(lvl_df).mark_rule(strokeDash=[5, 5], strokeWidth=1.6).encode(
+                y="價格:Q",
+                color=alt.Color("指標:N")
+            )
+            st.altair_chart((main_chart + lvl_chart).interactive(), use_container_width=True)
