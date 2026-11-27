@@ -39,9 +39,14 @@ components.html(
 )
 
 FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", ""))
-FINMIND_URL = "https://api." + "finmindtrade" + ".com/api/v4/data"
-TWSE_T86_URL = "https://openapi." + "twse" + ".com.tw/v1/fund/T86"
+FINMIND_URL = "https://finmindtrade.com"
+TWSE_T86_URL = "https://twse.com.tw"
 TW_TZ = timezone(timedelta(hours=8))
+
+TECH_INDUSTRIES = {
+    "半導體業", "電腦及週邊設備業", "電子零組件業", "光電業",
+    "通信網路業", "電子通路業", "資訊服務業", "其他電子業"
+}
 
 DEFAULT_HOLDINGS = [
     {"代號": "2891", "買進成本": 71.4},
@@ -76,6 +81,64 @@ def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.025):
             is_conf = abs(v - ma60) / ma60 <= 0.025
             return k, v, fibs, is_conf
     return None, 0.0, fibs, False
+
+
+def run_quick_backtest(df):
+    """2年歷史回測引擎 (含隔日跳空滑價修正)"""
+    if len(df) < 120:
+        return 0, 0.0, 0.0
+    close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
+    ma20, ma60 = close.rolling(20).mean(), close.rolling(60).mean()
+    vol_ma5 = vol.rolling(5).mean()
+    rsi = calculate_rsi(close, 14)
+    k, d = calculate_kd(df, 9)
+
+    trades = []
+    in_pos, entry_p, stop_p, target_p = False, 0.0, 0.0, 0.0
+
+    for i in range(65, len(df) - 1):
+        c, o, l, h = float(close.iloc[i]), float(open_p.iloc[i]), float(low.iloc[i]), float(high.iloc[i])
+        v, v_prev, v_ma5 = float(vol.iloc[i]), float(vol.iloc[i - 1]), float(vol_ma5.iloc[i - 1])
+        m20, m60 = float(ma20.iloc[i]), float(ma60.iloc[i])
+        m60_prev = float(ma60.iloc[i - 5])
+        r = float(rsi.iloc[i])
+        k_now, d_now = float(k.iloc[i]), float(d.iloc[i])
+        k_prev, d_prev = float(k.iloc[i - 1]), float(d.iloc[i - 1])
+        h20 = float(high.iloc[i - 20 : i].max())
+        h60, l60 = float(high.iloc[i - 60 : i].max()), float(low.iloc[i - 60 : i].min())
+        swing = h60 - l60
+
+        if not in_pos:
+            is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
+            is_smart_money = (v_prev < v_ma5) and (c > o) and (v > v_prev * 1.2)
+            if (
+                c > m60 and m60 > m60_prev
+                and ((h20 - c) / h20) >= 0.03
+                and (38 <= r <= 52)
+                and is_kd_gold and is_smart_money and swing > 0
+            ):
+                fibs = [h60 - swing * ratio for ratio in (0.382, 0.500, 0.618)]
+                if any(abs(c - f) / f <= 0.025 or abs(l - f) / f <= 0.025 for f in fibs):
+                    struct_stop = max(m60, h60 - swing * 0.786)
+                    if (c - struct_stop) / c <= 0.065:
+                        in_pos = True
+                        entry_p = c
+                        stop_p = max(struct_stop, c * 0.94)
+                        target_p = m20
+        else:
+            if l <= stop_p:
+                exit_p = min(o, stop_p)
+                trades.append((exit_p - entry_p) / entry_p * 100)
+                in_pos = False
+            elif h >= target_p:
+                exit_p = max(o, target_p)
+                trades.append((exit_p - entry_p) / entry_p * 100)
+                in_pos = False
+
+    if not trades:
+        return 0, 0.0, 0.0
+    wins = [t for t in trades if t > 0]
+    return len(trades), len(wins) / len(trades) * 100, sum(trades) / len(trades)
 @st.cache_data(ttl=55)
 def get_twii_status(lookback_days=60):
     try:
@@ -118,7 +181,7 @@ def get_all_tw_names(token):
 
 
 @st.cache_data(ttl=86400)
-def get_tw_stock_list(token):
+def get_tw_stock_list(token, tech_only=True):
     try:
         res = requests.get(FINMIND_URL, params={"dataset": "TaiwanStockInfo", "token": token}, timeout=15).json()
         if res.get("msg") != "success":
@@ -126,14 +189,21 @@ def get_tw_stock_list(token):
         df = pd.DataFrame(res["data"])
         latest_date = pd.to_datetime(df["date"]).max()
         cutoff = (latest_date - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
-        df = df[
+        cond = (
             df["type"].isin(["twse", "tpex"])
             & (df["stock_id"].str.len() == 4)
             & (df["stock_id"].str.isdigit())
             & (df["date"] >= cutoff)
-        ]
+        )
+        if tech_only and "industry_category" in df.columns:
+            cond = cond & (df["industry_category"].isin(TECH_INDUSTRIES))
+        df = df[cond].drop_duplicates(subset=["stock_id"], keep="last")
         return {
-            r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {"id": r["stock_id"], "name": r["stock_name"]}
+            r["stock_id"] + (".TW" if r["type"] == "twse" else ".TWO"): {
+                "id": r["stock_id"],
+                "name": r["stock_name"],
+                "industry": r.get("industry_category", "電子科技"),
+            }
             for _, r in df.iterrows()
         }
     except Exception:
@@ -141,8 +211,8 @@ def get_tw_stock_list(token):
 
 
 @st.cache_data(ttl=3600)
-def get_top5_institutional(token):
-    stock_map = get_tw_stock_list(token)
+def get_top5_institutional(token, tech_only=True):
+    stock_map = get_tw_stock_list(token, tech_only=tech_only)
     id_to_name = {v["id"]: v["name"] for v in stock_map.values()}
     if not id_to_name:
         return pd.DataFrame(), pd.DataFrame(), ""
@@ -182,16 +252,18 @@ def get_top5_institutional(token):
     if not sell_df.empty:
         sell_df["買賣超(張)"] = sell_df["買賣超(張)"].map(lambda x: f"{x:+,}")
     return buy_df, sell_df, data_date
+
+
 @st.cache_data(ttl=3600)
 def download_all_market_data(tickers):
     all_dfs = {}
-    batch_size = 250
-    bar = st.progress(0, text="下載全市場日 K 線中...")
+    batch_size = 200
+    bar = st.progress(0, text="下載 2 年日 K 線（供即時掃描與歷史回測）...")
     total = (len(tickers) + batch_size - 1) // batch_size
     for idx, i in enumerate(range(0, len(tickers), batch_size)):
         batch = tickers[i:i + batch_size]
         try:
-            data = yf.download(batch, period="4mo", group_by="ticker", progress=False, threads=True)
+            data = yf.download(batch, period="2y", group_by="ticker", progress=False, threads=True)
             for t in batch:
                 if t in data.columns.get_level_values(0):
                     df = data[t].dropna(subset=["Close", "Volume"])
@@ -245,11 +317,12 @@ with st.sidebar:
     auto_refresh = st.toggle("🟢 開啟盤中即時自動更新 (60秒)", value=True)
     refresh_sec = 60 if auto_refresh else None
     st.divider()
-    st.header("⚙️ 全市場選股參數微調")
+    st.header("🎯 選股池與參數微調")
+    only_tech = st.toggle("💻 鎖定電子 / AI / 半導體族群 (與LINE同步)", value=True)
     rsi_min, rsi_max = st.slider("14日 RSI 強勢回檔區間", 25, 65, (38, 52), 1)
     min_pullback = st.slider("距20日高點至少回檔 (%)", 1, 20, 3, 1)
     min_vol = st.number_input("5日均量下限 (張)", 300, 10000, 1000, 100)
-    min_price = st.number_input("最低股價 (元)", 10, 200, 15, 5)
+    min_price = st.number_input("最低股價 (元)", 10, 200, 20, 5)
     st.divider()
     req_fib = st.checkbox("強制碰觸黃金分割 (0.382/0.5/0.618)", value=True)
     req_conf_only = st.checkbox("🔥 只看「黃金分割＋季線重疊」雙支撐共振股", value=False)
@@ -259,12 +332,12 @@ with st.sidebar:
     req_smart_vol = st.checkbox("💰 強制主力縮量洗盤後紅K出量攻擊", value=True)
     max_stop_pct = st.slider("最大停損空間上限 (%)", 3.0, 12.0, 6.5, 0.5) / 100
     req_inst = st.checkbox("強制近 5 日三大法人買超 > 0", value=False)
-    top_n = st.slider("顯示精選檔數", 3, 15, 5)
+    top_n = st.slider("顯示精選檔數 (TOP N)", 3, 15, 10)
     st.divider()
     if not FINMIND_TOKEN:
         FINMIND_TOKEN = st.text_input("輸入 FinMind Token", type="password")
 st.title("📊 台股 AI 波段監控與選股看板")
-tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 主力洗盤出量＋KD金叉高勝率掃描"])
+tab1, tab2 = st.tabs(["🔔 持股與觀察股階梯支撐監控", "📉 電子/AI 主力洗盤出量＋KD金叉 TOP 10"])
 
 period_map = {"20日 (月波段)": 20, "60日 (季波段)": 60, "120日 (半年波段)": 120, "240日 (年波段)": 240}
 sel_twii_period = st.radio("🇹🇼 選擇【大盤】黃金分割計算週期：", list(period_map.keys()), index=1, horizontal=True, key="twii_period_radio")
@@ -297,9 +370,10 @@ def render_live_market_panel(days):
 render_live_market_panel(twii_days)
 
 if FINMIND_TOKEN:
-    buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN)
+    buy_top5, sell_top5, inst_date = get_top5_institutional(FINMIND_TOKEN, tech_only=only_tech)
+    scope_label = "電子/半導體" if only_tech else "全市場"
     if not buy_top5.empty or not sell_top5.empty:
-        with st.expander(f"🏦 三大法人合計買賣超 TOP 5（資料日期：{inst_date}）", expanded=False):
+        with st.expander(f"🏦 {scope_label}三大法人合計買賣超 TOP 5（資料日期：{inst_date}）", expanded=False):
             c_buy, c_sell = st.columns(2)
             with c_buy:
                 st.markdown("**🔥 買超前五名**")
@@ -394,14 +468,14 @@ with tab2:
         st.warning("⚠️ 請在左側邊欄輸入 FinMind Token 或設定 Streamlit Secrets。")
         st.stop()
     b1, b2 = st.columns(2)
-    run_scan = b1.button("🚀 開始高勝率精品低接掃描", type="primary", use_container_width=True)
-    force_refresh = b2.button("🔄 強制重抓盤中最新報價", use_container_width=True)
+    run_scan = b1.button("🚀 開始電子/AI 高勝率 TOP 10 掃描", type="primary", use_container_width=True)
+    force_refresh = b2.button("🔄 強制重抓最新報價", use_container_width=True)
     if force_refresh:
         download_all_market_data.clear()
         st.session_state["market_cached"] = True
 
     if run_scan or force_refresh or "market_cached" in st.session_state:
-        stock_map = get_tw_stock_list(FINMIND_TOKEN)
+        stock_map = get_tw_stock_list(FINMIND_TOKEN, tech_only=only_tech)
         if not stock_map:
             st.error("無法取得台股清單，請檢查 Token。")
             st.stop()
@@ -410,6 +484,8 @@ with tab2:
 
         passed = []
         for t, df in market_data.items():
+            if t not in stock_map:
+                continue
             close, open_p, low_p, vol = df["Close"], df["Open"], df["Low"], df["Volume"]
             vol_ma5_s = (vol / 1000).rolling(5).mean()
             vol_ma5, vol_ma5_prev = float(vol_ma5_s.iloc[-1]), float(vol_ma5_s.iloc[-2])
@@ -449,44 +525,59 @@ with tab2:
                 continue
 
             dual_stop = max(struct_stop, curr_c * (1 - max_stop_pct))
+            bt_cnt, bt_win, bt_ret = run_quick_backtest(df)
             info = stock_map[t]
             passed.append({
-                "ticker": t, "stock_id": info["id"], "name": info["name"], "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
+                "ticker": t, "stock_id": info["id"], "name": info["name"],
+                "industry": info["industry"].replace("業", "").replace("設備", ""),
+                "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100,
                 "rsi": curr_rsi, "fib_hit": fib_hit or "未觸及", "fib_price": fib_p, "fib_dict": fib_dict, "is_conf": is_conf,
                 "ma20": ma20, "dual_stop": dual_stop, "high_20d": h20,
                 "up_ma20": ((ma20 - curr_c) / curr_c) * 100, "up_high": ((h20 - curr_c) / curr_c) * 100,
+                "bt_cnt": bt_cnt, "bt_win": bt_win, "bt_ret": bt_ret,
+                "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0,
             })
 
-        passed = sorted(passed, key=lambda x: (not x["is_conf"], x["rsi"]))[:40]
+        passed = sorted(passed, key=lambda x: (not x["is_conf"], -x["bt_win"], x["rsi"]))[:25]
         final_list = []
-        with st.spinner(f"技術與主力條件 {len(passed)} 檔過關，核對三大法人數據中..."):
+        with st.spinner(f"技術與主力條件 {len(passed)} 檔過關，核對三大法人數據並計算綜合評分中..."):
             for item in passed:
                 net = check_inst_buy_5d(item["stock_id"], FINMIND_TOKEN)
                 if req_inst and net <= 0:
                     continue
                 item["net_5d"] = int(net)
+                score = 0
+                if item["is_conf"]:
+                    score += 30
+                if item["net_5d"] > 0:
+                    score += min(25, item["net_5d"] / 100)
+                if item["bt_cnt"] >= 2 and item["bt_win"] >= 60:
+                    score += 25
+                score += min(20, item["vol_ratio"] * 8)
+                item["score"] = round(score, 1)
                 final_list.append(item)
 
         if not final_list:
             st.info("💡 目前條件較嚴格（寧缺勿濫），暫無符合標的，可在左側適度放寬開關。")
         else:
-            df_res = pd.DataFrame(final_list).sort_values(by=["is_conf", "rsi"], ascending=[False, True]).head(top_n)
-            format_name = lambda r: f"{r['name']} {'🔥雙支撐' if r['is_conf'] else '⚡主力金叉'}".strip()
-            format_buy = lambda r: f"{r['fib_price']*0.99:.1f}~{r['fib_price']:.1f} ({'✅已到買區' if r['close'] <= r['fib_price']*1.005 else '⏳等拉回'})"
+            df_res = pd.DataFrame(final_list).sort_values(by=["score"], ascending=False).head(top_n)
+            format_name = lambda r: f"{r['name']} ({r['industry']}) {'🔥雙支撐' if r['is_conf'] else '⚡金叉'}".strip()
+            format_buy = lambda r: f"{r['fib_price']*0.99:.1f}~{r['fib_price']:.1f} ({'✅買區' if r['close'] <= r['fib_price']*1.005 else '⏳等拉回'})"
+            format_bt = lambda r: f"{r['bt_win']:.0f}% ({r['bt_cnt']}次 / 均{r['bt_ret']:+.1f}%)" if r["bt_cnt"] > 0 else "首現訊號"
 
             disp = pd.DataFrame({
-                "代號": df_res["stock_id"], "名稱": df_res.apply(format_name, axis=1),
+                "代號": df_res["stock_id"], "名稱/族群": df_res.apply(format_name, axis=1),
                 "現價": df_res["close"].map(lambda x: f"{x:.1f}"), "漲跌幅": df_res["pct"].map(lambda x: f"{x:+.2f}%"),
+                "📊 2年回測勝率": df_res.apply(format_bt, axis=1),
+                "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
                 "🟢 建議低接買點": df_res.apply(format_buy, axis=1),
-                "📐 黃金分割支撐": df_res.apply(lambda r: f"{r['fib_hit']} ({r['fib_price']:.1f})" if r["fib_hit"] != "未觸及" else "未觸及", axis=1),
-                "14日 RSI": df_res["rsi"].map(lambda x: f"{x:.1f}"), "5日法人(張)": df_res["net_5d"].map(lambda x: f"{x:+,}"),
                 "🟢 第一賣點(月線)": df_res.apply(lambda r: f"{r['ma20']:.1f} ({r['up_ma20']:+.1f}%)", axis=1),
                 "🔴 第二賣點(前高)": df_res.apply(lambda r: f"{r['high_20d']:.1f} (+{r['up_high']:.1f}%)", axis=1),
-                "🛡️ 雙重停損(6%風控)": df_res["dual_stop"].map(lambda x: f"{x:.1f}"),
+                "🛡️ 雙重停損": df_res["dual_stop"].map(lambda x: f"{x:.1f}"),
             })
             st.table(disp.set_index("代號"))
 
-            opts = [f"{r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']}）" for _, r in df_res.iterrows()]
+            opts = [f"#{i+1} {r['stock_id']} {r['name']}（現價 {r['close']:.1f} / 碰觸 {r['fib_hit']} / 勝率 {r['bt_win']:.0f}%）" for i, (_, r) in enumerate(df_res.iterrows())]
             sel_row = df_res.iloc[opts.index(st.selectbox("選擇檢視低接標的走勢：", opts))]
             cdf = market_data[sel_row["ticker"]].copy().reset_index()
             date_col = cdf.columns[0]
