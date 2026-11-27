@@ -39,8 +39,8 @@ components.html(
 )
 
 FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", os.environ.get("FINMIND_TOKEN", ""))
-FINMIND_URL = "https://finmindtrade.com"
-TWSE_T86_URL = "https://twse.com.tw"
+FINMIND_URL = "https://api." + "://finmindtrade.com"
+TWSE_T86_URL = "https://openapi." + "twse.com.tw/v1/fund/T86"
 TW_TZ = timezone(timedelta(hours=8))
 
 TECH_INDUSTRIES = {
