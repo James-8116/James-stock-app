@@ -10,7 +10,6 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID")
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
 FINMIND_URL = "https://finmindtrade.com"
-TWSE_T86_URL = "https://twse.com.tw"
 STREAMLIT_APP_URL = "https://streamlit.app"
 LINE_PUSH_URL = "https://line.me"
 TW_TZ = timezone(timedelta(hours=8))
@@ -58,7 +57,7 @@ def get_tech_stock_list():
         return {}
 
 
-# ================= 2. 技術指標計算工具 =================
+# ================= 2. 技術指標計算工具 (RSI & ATR) =================
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain, loss = delta.clip(lower=0), -delta.clip(upper=0)
@@ -67,25 +66,14 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 
-def calculate_kd(df, period=9):
-    low_min = df["Low"].rolling(period).min()
-    high_max = df["High"].rolling(period).max()
-    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
-    k = rsv.ewm(com=2, adjust=False).mean()
-    d = k.ewm(com=2, adjust=False).mean()
-    return k, d
-
-
-def check_fib_touch(curr_c, curr_l, h60, l60, ma60, tol=0.025):
-    swing = h60 - l60
-    if swing <= 0:
-        return None, 0.0, False
-    for k, ratio in [("0.382", 0.382), ("0.500", 0.500), ("0.618", 0.618)]:
-        v = h60 - swing * ratio
-        if abs(curr_c - v) / v <= tol or abs(curr_l - v) / v <= tol:
-            is_confluence = abs(v - ma60) / ma60 <= 0.025
-            return k, v, is_confluence
-    return None, 0.0, False
+def calculate_atr(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
+    return tr.rolling(period).mean()
 
 
 # ================= 3. 大盤多空狀態與法人籌碼 =================
@@ -163,68 +151,78 @@ def get_top5_tech_institutional(stock_map):
     top_buy = sorted([x for x in items if x["net"] > 0], key=lambda x: x["net"], reverse=True)[:5]
     top_sell = sorted([x for x in items if x["net"] < 0], key=lambda x: x["net"])[:5]
     return top_buy, top_sell
-# ================= 4. 單股 2 年歷史回測引擎 (含跳空修正) =================
-def run_quick_backtest(df):
-    if len(df) < 120:
+# ================= 4. V6 精準突破 2 年回測引擎 (含跳空與稅費修正) =================
+def run_v6_backtest(df):
+    if len(df) < 130:
         return 0, 0.0, 0.0
 
     close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
-    ma20, ma60 = close.rolling(20).mean(), close.rolling(60).mean()
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+    ma120 = close.rolling(120).mean()
     vol_ma5 = vol.rolling(5).mean()
     rsi = calculate_rsi(close, 14)
-    k, d = calculate_kd(df, 9)
+    atr = calculate_atr(df, 14)
 
     trades = []
-    in_pos, entry_p, stop_p, target_p = False, 0.0, 0.0, 0.0
+    in_pos, entry_p, stop_p, highest_p = False, 0.0, 0.0, 0.0
+    fee = 0.005
 
-    for i in range(65, len(df) - 1):
+    # 排除最後 1 根（即今日觸發訊號的這根）
+    for i in range(122, len(df) - 1):
         c, o, l, h = float(close.iloc[i]), float(open_p.iloc[i]), float(low.iloc[i]), float(high.iloc[i])
-        v, v_prev, v_ma5 = float(vol.iloc[i]), float(vol.iloc[i - 1]), float(vol_ma5.iloc[i - 1])
-        m20, m60 = float(ma20.iloc[i]), float(ma60.iloc[i])
-        m60_prev = float(ma60.iloc[i - 5])
+        c_prev = float(close.iloc[i - 1])
+        v, v_ma5 = float(vol.iloc[i]), float(vol_ma5.iloc[i])
+        m20, m60, m120 = float(ma20.iloc[i]), float(ma60.iloc[i]), float(ma120.iloc[i])
+        m60_20d_ago = float(ma60.iloc[i - 20])
         r = float(rsi.iloc[i])
-        k_now, d_now = float(k.iloc[i]), float(d.iloc[i])
-        k_prev, d_prev = float(k.iloc[i - 1]), float(d.iloc[i - 1])
-        h20 = float(high.iloc[i - 20 : i].max())
-        h60, l60 = float(high.iloc[i - 60 : i].max()), float(low.iloc[i - 60 : i].min())
-        swing = h60 - l60
+        curr_atr = float(atr.iloc[i])
+
+        if pd.isna(curr_atr) or m60_20d_ago <= 0:
+            continue
+
+        prev_20d_high = float(close.iloc[i - 20 : i].max())
+        box_h = float(high.iloc[i - 5 : i].max())
+        box_l = float(low.iloc[i - 5 : i].min())
+        box_range = (box_h - box_l) / box_l if box_l > 0 else 1.0
 
         if not in_pos:
-            is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
-            is_smart_money = (v_prev < v_ma5) and (c > o) and (v > v_prev * 1.2)
-            if (
-                c > m60 and m60 > m60_prev
-                and ((h20 - c) / h20) >= 0.03
-                and (38 <= r <= 52)
-                and is_kd_gold and is_smart_money and swing > 0
-            ):
-                fibs = [h60 - swing * ratio for ratio in (0.382, 0.500, 0.618)]
-                if any(abs(c - f) / f <= 0.025 or abs(l - f) / f <= 0.025 for f in fibs):
-                    struct_stop = max(m60, h60 - swing * 0.786)
-                    if (c - struct_stop) / c <= 0.065:
-                        in_pos = True
-                        entry_p = c
-                        stop_p = max(struct_stop, c * 0.94)
-                        target_p = m20
+            is_strong_trend = (c > m20 > m60 > m120) and ((m60 - m60_20d_ago) / m60_20d_ago >= 0.025)
+            is_tight_box = box_range <= 0.085
+            body = c - o
+            upper_shadow = h - c
+            pct_chg = (c - c_prev) / c_prev
+            is_clean_breakout = (
+                (c > prev_20d_high)
+                and (body > 0)
+                and (upper_shadow <= body * 0.35)
+                and (0.02 <= pct_chg <= 0.08)
+                and (v > v_ma5 * 1.25)
+                and (55 <= r <= 73)
+            )
+            if is_strong_trend and is_tight_box and is_clean_breakout:
+                in_pos = True
+                entry_p = c
+                highest_p = c
+                stop_p = max(l * 0.99, c - 1.8 * curr_atr, c * 0.945)
         else:
-            if l <= stop_p:
-                exit_p = min(o, stop_p)
-                trades.append((exit_p - entry_p) / entry_p * 100)
+            highest_p = max(highest_p, h)
+            trailing_stop = max(stop_p, highest_p - 2.2 * curr_atr)
+            if l <= trailing_stop:
+                exit_p = min(o, trailing_stop)
+                trades.append(((exit_p - entry_p) / entry_p - fee) * 100)
                 in_pos = False
-            elif h >= target_p:
-                exit_p = max(o, target_p)
-                trades.append((exit_p - entry_p) / entry_p * 100)
+            elif c < m20:
+                trades.append(((c - entry_p) / entry_p - fee) * 100)
                 in_pos = False
 
     if not trades:
         return 0, 0.0, 0.0
     wins = [t for t in trades if t > 0]
-    win_rate = len(wins) / len(trades) * 100
-    avg_ret = sum(trades) / len(trades)
-    return len(trades), win_rate, avg_ret
+    return len(trades), len(wins) / len(trades) * 100, sum(trades) / len(trades)
 
 
-# ================= 5. 核心選股掃描器 (篩出前 10 名) =================
+# ================= 5. V6 核心選股掃描器 (篩出前 10 名) =================
 def run_screener(stock_map, is_bull_market=True, is_intraday=False):
     tickers = list(stock_map.keys())
     if not tickers:
@@ -239,89 +237,103 @@ def run_screener(stock_map, is_bull_market=True, is_intraday=False):
                 if t not in data.columns.get_level_values(0):
                     continue
                 df = data[t].dropna(subset=["Close", "Volume"])
-                if len(df) < 66:
+                if len(df) < 125:
                     continue
 
-                close, open_p, low_p, vol = df["Close"], df["Open"], df["Low"], df["Volume"]
+                close, open_p, high, low, vol = df["Close"], df["Open"], df["High"], df["Low"], df["Volume"]
                 vol_ma5_s = (vol / 1000).rolling(5).mean()
-                vol_ma5, vol_ma5_prev = float(vol_ma5_s.iloc[-1]), float(vol_ma5_s.iloc[-2])
-                curr_v, prev_v = float(vol.iloc[-1]) / 1000, float(vol.iloc[-2]) / 1000
-
+                vol_ma5 = float(vol_ma5_s.iloc[-1])
+                curr_v = float(vol.iloc[-1]) / 1000
                 curr_c = float(close.iloc[-1])
+
+                # 流動性門檻：5日均量 >= 1000張，股價 >= 20元
                 if vol_ma5 < 1000 or curr_c < 20:
                     continue
 
                 ma5 = float(close.rolling(5).mean().iloc[-1])
                 ma20 = float(close.rolling(20).mean().iloc[-1])
                 ma60_s = close.rolling(60).mean()
-                ma60, ma60_5d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-6])
+                ma60, ma60_20d_ago = float(ma60_s.iloc[-1]), float(ma60_s.iloc[-21])
+                ma120 = float(close.rolling(120).mean().iloc[-1])
 
                 rsi_s = calculate_rsi(close, 14)
                 rsi, prev_rsi = float(rsi_s.iloc[-1]), float(rsi_s.iloc[-2])
-                k_s, d_s = calculate_kd(df, 9)
-                k_now, d_now = float(k_s.iloc[-1]), float(d_s.iloc[-1])
-                k_prev, d_prev = float(k_s.iloc[-2]), float(d_s.iloc[-2])
+                atr_s = calculate_atr(df, 14)
+                curr_atr = float(atr_s.iloc[-1])
 
-                prev_c, curr_o, curr_l = float(close.iloc[-2]), float(open_p.iloc[-1]), float(low_p.iloc[-1])
-                h20 = float(df["High"].iloc[-20:].max())
-                h60 = float(df["High"].iloc[-60:].max())
-                l60 = float(df["Low"].iloc[-60:].min())
-                swing = h60 - l60
-
-                struct_stop = max(ma60, h60 - swing * 0.786)
-                is_kd_gold = (k_prev <= d_prev) and (k_now > d_now) and (k_now < 45)
-                is_smart_money = (prev_v < vol_ma5_prev) and (curr_c > curr_o) and (is_intraday or curr_v > prev_v * 1.2)
+                c_prev = float(close.iloc[-2])
+                curr_o, curr_h, curr_l = float(open_p.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1])
                 info = stock_map[t]
 
                 if is_bull_market:
-                    if curr_c <= ma60 or ma60 <= ma60_5d_ago or ((h20 - curr_c) / h20) * 100 < 3.0:
+                    if pd.isna(curr_atr) or ma60_20d_ago <= 0:
                         continue
-                    if not (38 <= rsi <= 52 and is_kd_gold and is_smart_money):
-                        continue
-                    if (curr_c - struct_stop) / curr_c > 0.065:
-                        continue
-                    fib_hit, fib_p, is_conf = check_fib_touch(curr_c, curr_l, h60, l60, ma60, 0.025)
-                    if not fib_hit:
+                    prev_20d_high = float(close.iloc[-21:-1].max())
+                    box_h = float(high.iloc[-6:-1].max())
+                    box_l = float(low.iloc[-6:-1].min())
+                    box_range = (box_h - box_l) / box_l if box_l > 0 else 1.0
+
+                    # 1. 四線多頭排列 + 季線近20日斜率向上超過 +2.5%
+                    is_strong_trend = (curr_c > ma20 > ma60 > ma120) and ((ma60 - ma60_20d_ago) / ma60_20d_ago >= 0.025)
+                    # 2. 箱型壓縮蓄勢 (前5日震幅 <= 8.5%)
+                    is_tight_box = box_range <= 0.085
+                    # 3. 實體飽滿紅K突破20日收盤新高 (防隔日沖長上影)
+                    body = curr_c - curr_o
+                    upper_shadow = curr_h - curr_c
+                    pct_chg = (curr_c - c_prev) / c_prev
+                    vol_ok = is_intraday or (curr_v > vol_ma5 * 1.25)
+                    is_clean_breakout = (
+                        (curr_c > prev_20d_high)
+                        and (body > 0)
+                        and (upper_shadow <= body * 0.35)
+                        and (0.02 <= pct_chg <= 0.08)
+                        and vol_ok
+                        and (55 <= rsi <= 73)
+                    )
+
+                    if not (is_strong_trend and is_tight_box and is_clean_breakout):
                         continue
 
-                    dual_stop = max(struct_stop, curr_c * 0.94)
-                    bt_cnt, bt_win, bt_ret = run_quick_backtest(df)
+                    init_stop = max(curr_l * 0.99, curr_c - 1.8 * curr_atr, curr_c * 0.945)
+                    trail_ref = max(ma20, curr_c - 2.2 * curr_atr)
+                    bt_cnt, bt_win, bt_ret = run_v6_backtest(df)
 
                     passed.append({
                         "stock_id": info["id"], "name": info["name"], "industry": info["industry"],
-                        "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi,
-                        "fib_hit": fib_hit, "fib_price": fib_p, "is_conf": is_conf,
-                        "sell1": ma20, "sell2": h20, "dual_stop": dual_stop,
+                        "close": curr_c, "pct": pct_chg * 100, "rsi": rsi,
+                        "break_lvl": prev_20d_high, "init_stop": init_stop, "trail_ref": trail_ref,
                         "bt_cnt": bt_cnt, "bt_win": bt_win, "bt_ret": bt_ret,
-                        "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0
+                        "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0,
+                        "is_breakout_mode": True
                     })
                 else:
-                    if not (rsi < 28 and rsi > prev_rsi and is_kd_gold):
+                    # 大盤跌破季線時，自動轉為超賣極端反彈防守模式
+                    if not (rsi < 28 and rsi > prev_rsi and curr_c > curr_o):
                         continue
                     passed.append({
                         "stock_id": info["id"], "name": info["name"], "industry": info["industry"],
-                        "close": curr_c, "pct": ((curr_c - prev_c) / prev_c) * 100, "rsi": rsi,
-                        "fib_hit": "超賣底", "fib_price": curr_c, "is_conf": False,
-                        "sell1": ma5, "sell2": ma20, "dual_stop": curr_l * 0.97,
+                        "close": curr_c, "pct": ((curr_c - c_prev) / c_prev) * 100, "rsi": rsi,
+                        "break_lvl": curr_c, "init_stop": curr_l * 0.97, "trail_ref": ma5,
                         "bt_cnt": 0, "bt_win": 0.0, "bt_ret": 0.0,
-                        "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0
+                        "vol_ratio": curr_v / vol_ma5 if vol_ma5 > 0 else 1.0,
+                        "is_breakout_mode": False
                     })
         except Exception:
             continue
 
-    passed.sort(key=lambda x: (not x["is_conf"], -x["bt_win"], x["rsi"]))
+    # 先篩出前 20 檔查詢 5 日法人買賣超，再綜合評分排序取 TOP 10
+    passed.sort(key=lambda x: (-x["bt_ret"], -x["vol_ratio"]))
     candidates = passed[:20]
 
     for item in candidates:
         item["inst_5d"] = check_inst_buy_5d(item["stock_id"])
+        # 綜合評分：法人買超籌碼(+35) + 歷史回測正報酬/高勝率(+35) + 突破量能倍數(+30)
         score = 0
-        if item["is_conf"]:
-            score += 30
         if item["inst_5d"] > 0:
-            score += min(25, item["inst_5d"] / 100)
-        if item["bt_cnt"] >= 2 and item["bt_win"] >= 60:
-            score += 25
-        score += min(20, item["vol_ratio"] * 8)
+            score += min(35, item["inst_5d"] / 80)
+        if item["bt_cnt"] >= 1 and item["bt_ret"] > 0:
+            score += min(35, 15 + item["bt_ret"] * 2)
+        score += min(30, item["vol_ratio"] * 12)
         item["score"] = round(score, 1)
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -330,12 +342,12 @@ def run_screener(stock_map, is_bull_market=True, is_intraday=False):
 def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
     is_bull = twii["is_bull"] if twii else True
     header_bg = "#1E3A8A" if is_bull else "#1B5E20"
-    mode_tag = "⚡ 盤中電子AI預警" if is_intraday else "📊 盤後電子AI精選 TOP 10"
-    regime_text = "多頭順風 (站上季線)" if is_bull else "空頭防守 (跌破季線)"
+    mode_tag = "⚡ 盤中電子AI突破預警" if is_intraday else "🚀 盤後電子AI強勢突破 TOP 10"
+    regime_text = "多頭順風 (四線多頭突破策略)" if is_bull else "空頭防守 (超賣止跌搶反彈)"
 
     header_contents = [
         {"type": "text", "text": f"{mode_tag} • {now_str}", "color": "#93C5FD", "size": "xs", "weight": "bold"},
-        {"type": "text", "text": f"大盤：{regime_text}", "color": "#FFFFFF", "size": "lg", "weight": "bold", "margin": "xs"},
+        {"type": "text", "text": f"大盤：{regime_text}", "color": "#FFFFFF", "size": "md", "weight": "bold", "margin": "xs"},
     ]
     if twii:
         sign = "+" if twii["pct"] >= 0 else ""
@@ -349,7 +361,7 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
     if not picks:
         body_contents.append({
             "type": "box", "layout": "vertical", "paddingAll": "12px", "backgroundColor": "#F8FAFC", "cornerRadius": "8px",
-            "contents": [{"type": "text", "text": "今日電子/AI族群無符合洗盤出量＋KD金叉之標的，建議保留現金觀望。", "size": "sm", "color": "#64748B", "wrap": True}],
+            "contents": [{"type": "text", "text": "今日電子/AI族群無符合「箱型蓄勢＋實體飽滿帶量突破20日新高」之標的，嚴守紀律空手觀望。", "size": "sm", "color": "#64748B", "wrap": True}],
         })
     else:
         for idx, s in enumerate(picks):
@@ -359,10 +371,14 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
             pct_sign = "+" if s["pct"] >= 0 else ""
             inst_color = "#D32F2F" if s["inst_5d"] > 0 else ("#2E7D32" if s["inst_5d"] < 0 else "#64748B")
             inst_sign = "+" if s["inst_5d"] > 0 else ""
-            
+
             ind_short = s["industry"].replace("業", "").replace("設備", "")
-            badge_str = f"🔥共振({ind_short})" if s["is_conf"] else f"⚡出量({ind_short})"
-            bt_str = f"回測{s['bt_cnt']}次勝率{s['bt_win']:.0f}%" if s["bt_cnt"] > 0 else "首現訊號"
+            badge_str = f"🚀突破({ind_short} {s['vol_ratio']:.1f}x量)" if s["is_breakout_mode"] else f"🛡️超賣({ind_short})"
+            if s["bt_cnt"] > 0:
+                ret_sign = "+" if s["bt_ret"] >= 0 else ""
+                bt_str = f"回測{s['bt_cnt']}次勝率{s['bt_win']:.0f}%(均{ret_sign}{s['bt_ret']:.1f}%)"
+            else:
+                bt_str = "2年首現突破"
 
             body_contents.append({
                 "type": "box", "layout": "vertical", "margin": "md" if idx > 0 else "none",
@@ -373,12 +389,12 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
                     ]},
                     {"type": "box", "layout": "horizontal", "margin": "xs", "contents": [
                         {"type": "text", "text": f"{s['close']:.1f} ({pct_sign}{s['pct']:.1f}%)", "size": "sm", "weight": "bold", "color": pct_color, "flex": 4},
-                        {"type": "text", "text": f"5日法人:{inst_sign}{s['inst_5d']}張 | {bt_str}", "size": "xxs", "color": inst_color, "align": "end", "flex": 7},
+                        {"type": "text", "text": f"5日法人:{inst_sign}{s['inst_5d']}張 | {bt_str}", "size": "xxs", "color": inst_color, "align": "end", "flex": 8},
                     ]},
                     {"type": "box", "layout": "horizontal", "margin": "xs", "backgroundColor": "#F1F5F9", "paddingAll": "5px", "cornerRadius": "4px", "contents": [
-                        {"type": "text", "text": f"支撐 {s['fib_price']:.1f}", "size": "xxs", "color": "#334155", "flex": 1},
-                        {"type": "text", "text": f"停損 {s['dual_stop']:.1f}", "size": "xxs", "color": "#15803D", "weight": "bold", "align": "center", "flex": 1},
-                        {"type": "text", "text": f"目標 {s['sell1']:.1f}/{s['sell2']:.1f}", "size": "xxs", "color": "#B91C1C", "align": "end", "flex": 2},
+                        {"type": "text", "text": f"突破點 {s['break_lvl']:.1f}", "size": "xxs", "color": "#334155", "flex": 1},
+                        {"type": "text", "text": f"硬停損 {s['init_stop']:.1f}", "size": "xxs", "color": "#15803D", "weight": "bold", "align": "center", "flex": 1},
+                        {"type": "text", "text": f"移動停利 {s['trail_ref']:.1f}", "size": "xxs", "color": "#B91C1C", "align": "end", "flex": 1},
                     ]},
                 ],
             })
@@ -404,7 +420,7 @@ def build_flex_message(twii, picks, top_buy, top_sell, is_intraday, now_str):
             {"type": "button", "style": "primary", "color": "#1E3A8A", "height": "sm", "action": {"type": "uri", "label": "開啟 Streamlit 互動看盤儀表板", "uri": STREAMLIT_APP_URL}}
         ]},
     }
-    return {"type": "flex", "altText": f"{mode_tag}：共篩選出 {len(picks)} 檔潛力標的", "contents": bubble}
+    return {"type": "flex", "altText": f"{mode_tag}：共篩選出 {len(picks)} 檔強勢標的", "contents": bubble}
 
 
 def push_line_message(flex_msg):
@@ -420,7 +436,7 @@ def main():
     now_tw = datetime.now(TW_TZ)
     is_intraday = now_tw.hour < 16
     now_str = now_tw.strftime("%m/%d %H:%M")
-    print(f"[{now_str}] 開始執行台股電子/AI/半導體掃描 (盤中模式={is_intraday})...")
+    print(f"[{now_str}] 開始執行 V6 電子/AI/半導體精準突破掃描 (盤中模式={is_intraday})...")
 
     twii = get_twii_status()
     is_bull = twii["is_bull"] if twii else True
@@ -429,7 +445,7 @@ def main():
     print(f"取得電子/AI/半導體有效標的共 {len(stock_map)} 檔")
 
     picks = run_screener(stock_map, is_bull_market=is_bull, is_intraday=is_intraday)
-    print(f"綜合評分篩選出 TOP {len(picks)} 檔標的")
+    print(f"V6 策略篩選出 TOP {len(picks)} 檔標的")
 
     if is_intraday and not picks:
         print("盤中無符合條件之標的，略過推播。")
