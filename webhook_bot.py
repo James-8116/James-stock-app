@@ -287,7 +287,7 @@ def analyze_single_stock_v6(stock_id):
         action_summary = "🚀 符合 V6 順勢突破！多頭點火可順勢進場。"
         buy_advice = f"{curr_c * 0.995:.1f} ~ {curr_c * 1.01:.1f} 元（突破確認區）"
         sell_advice = f"波段不設限，跌破 {trail_ref:.1f} 元再移動停利"
-        stop_advice = f"跌破 {init_stop:.1f} 元（今日低點/ATR防線）嚴格停損"
+        stop_advice = f"持股破 {init_stop:.1f} 元停損；空手若跌破後「站回 {init_stop:.1f} 元」可抓破底翻買點"
     elif is_rebound_ready:
         mode = "REBOUND"
         hit_lvl = "0.618 黃金深水區" if near_fib618 else "0.500 半山腰支撐"
@@ -295,7 +295,7 @@ def analyze_single_stock_v6(stock_id):
         action_summary = f"📐 觸及 {hit_lvl} 且 RSI 止跌，可輕倉搶反彈！"
         buy_advice = f"{curr_l:.1f} ~ {curr_c:.1f} 元（貼近黃金支撐低接）"
         sell_advice = f"短線反彈先看月線 {ma20:.1f} 元（空間 {(ma20-curr_c)/curr_c*100:+.1f}%）"
-        stop_advice = f"跌破 0.786 防線 {reb_stop:.1f} 元立即認賠出場"
+        stop_advice = f"持股破 {reb_stop:.1f} 元停損；空手若跌破後「站回 {reb_stop:.1f} 元」可抓破底翻買點"
     else:
         mode = "WAIT"
         if curr_c > fib500:
@@ -307,10 +307,10 @@ def analyze_single_stock_v6(stock_id):
         else:
             next_fib_txt = f"0.786 極限支撐 {fib786:.1f} 元"
             reb_stop = l60
-        action_summary = "⏳ 處於半空中間位置，建議等「拉回支撐」或「帶量突破」。"
+        action_summary = "⏳ 處於半空中間位置，建議等「拉回支撐」或「破底翻站回」。"
         buy_advice = f"低接等 {next_fib_txt}；追強等站上 {prev_20d_high:.1f} 元"
         sell_advice = f"若持有，反彈靠近月線 {ma20:.1f} 元可先減碼調節"
-        stop_advice = f"跌破下方防線 {reb_stop:.1f} 元務必嚴格停損"
+        stop_advice = f"持股破 {reb_stop:.1f} 元停損；空手若跌破後「站回 {reb_stop:.1f} 元」可抓破底翻買點"
 
     return {
         "id": stock_id, "name": name, "inst_5d": inst_5d, "mode": mode,
@@ -364,7 +364,7 @@ def build_stock_reply_card(s):
                         {"type": "text", "text": s["action_summary"], "size": "md", "weight": "bold", "color": "#0F172A", "wrap": True},
                         {"type": "text", "text": f"🟢 買進：{s['buy_advice']}", "size": "sm", "color": "#1E40AF", "weight": "bold", "margin": "md", "wrap": True},
                         {"type": "text", "text": f"🔴 停利：{s['sell_advice']}", "size": "sm", "color": "#B91C1C", "weight": "bold", "margin": "sm", "wrap": True},
-                        {"type": "text", "text": f"🛡️ 停損：{s['stop_advice']}", "size": "sm", "color": "#15803D", "weight": "bold", "margin": "sm", "wrap": True},
+                        {"type": "text", "text": f"🛡️ 防守/低接：{s['stop_advice']}", "size": "sm", "color": "#15803D", "weight": "bold", "margin": "sm", "wrap": True},
                     ]
                 },
                 {"type": "separator", "margin": "md"},
