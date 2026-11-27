@@ -8,10 +8,10 @@ from flask import Flask, request
 app = Flask(__name__)
 
 # ================= 環境變數設定 =================
-LINE_TOKEN = os.environ.get("LINE_TOKEN")
-FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
+LINE_TOKEN = (os.environ.get("LINE_TOKEN") or "").strip()
+FINMIND_TOKEN = (os.environ.get("FINMIND_TOKEN") or "").strip()
 FINMIND_URL = "https://finmindtrade.com"
-LINE_REPLY_URL = "https://line.me"
+LINE_PUSH_URL = "https://line.me"
 
 
 # ================= 指標與 V6 回測核心 =================
@@ -220,22 +220,29 @@ def callback():
     for event in body["events"]:
         if event.get("type") == "message" and event.get("message", {}).get("type") == "text":
             user_text = event["message"]["text"].strip()
-            reply_token = event["replyToken"]
+            user_id = event.get("source", {}).get("userId")
 
             match = re.search(r"\b(\d{4})\b", user_text)
-            if match:
+            if match and user_id:
                 stock_id = match.group(1)
-                res = analyze_single_stock_v6(stock_id)
-                if res:
-                    msg = build_stock_reply_card(res)
-                else:
-                    msg = {"type": "text", "text": f"❌ 找不到代號 {stock_id} 或上市櫃資料不足 125 個交易日。"}
-                requests.post(
-                    LINE_REPLY_URL,
+                print(f"收到查詢：{stock_id}，來自：{user_id}")
+                try:
+                    res = analyze_single_stock_v6(stock_id)
+                    if res:
+                        msg = build_stock_reply_card(res)
+                    else:
+                        msg = {"type": "text", "text": f"❌ 找不到代號 {stock_id} 或上市櫃資料不足 125 個交易日。"}
+                except Exception as e:
+                    print("分析錯誤：", e)
+                    msg = {"type": "text", "text": f"⚠️ 分析 {stock_id} 時發生錯誤：{e}"}
+
+                r = requests.post(
+                    LINE_PUSH_URL,
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"},
-                    json={"replyToken": reply_token, "messages": [msg]},
-                    timeout=10
+                    json={"to": user_id, "messages": [msg]},
+                    timeout=15
                 )
+                print("LINE Push 結果：", r.status_code, r.text)
     return "OK"
 
 
