@@ -9,9 +9,9 @@ LINE_TOKEN = os.environ.get("LINE_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 FINMIND_TOKEN = os.environ.get("FINMIND_TOKEN")
 
-FINMIND_URL = "https://finmindtrade.com"
-STREAMLIT_APP_URL = "https://streamlit.app"
-LINE_PUSH_URL = "https://line.me"
+FINMIND_URL = "https://api." + "://finmindtrade.com"
+STREAMLIT_APP_URL = "https://james-" + "stockapp.streamlit.app/"
+LINE_PUSH_URL = "https://api." + "line.me/v2/bot/message/push"
 TW_TZ = timezone(timedelta(hours=8))
 
 # 鎖定電子、半導體、AI 相關產業類別
